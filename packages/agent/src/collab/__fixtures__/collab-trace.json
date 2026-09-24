@@ -1,0 +1,2025 @@
+[
+  {
+    "t": "welcome",
+    "proto": 3,
+    "header": {
+      "type": "session",
+      "version": 3,
+      "id": "01a0a079-1b3b-741b-8946-8e0d665b2ea7",
+      "timestamp": "2026-09-14T15:11:26.523Z",
+      "cwd": "/tmp/project"
+    },
+    "state": {
+      "isStreaming": false,
+      "isAborting": false,
+      "queuedMessageCount": 0,
+      "cwd": "/tmp/project",
+      "model": {
+        "id": "claude-opus-4-8",
+        "name": "Claude Opus 4.8",
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "reasoning": true,
+        "input": ["text", "image"],
+        "cost": {
+          "input": 5,
+          "output": 25,
+          "cacheRead": 0.5,
+          "cacheWrite": 6.25
+        },
+        "contextWindow": 1000000,
+        "maxTokens": 128000,
+        "int": 57.3,
+        "tps": 61.5,
+        "thinking": {
+          "mode": "anthropic-adaptive",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsDisplay": true
+        },
+        "identity": {
+          "class": "anthropic",
+          "family": "opus",
+          "revision": "4.8.0"
+        },
+        "requiresGlyphTokenization": true,
+        "tokenizer": "claude-v47",
+        "supportsComputerUse": false,
+        "compat": {
+          "officialEndpoint": true,
+          "signingEndpoint": true,
+          "supportsContextManagement": true,
+          "supportsServerCompaction": true,
+          "firstPartyProvider": true,
+          "supportsOutputEffort": true,
+          "disableStrictTools": false,
+          "disableAdaptiveThinking": false,
+          "allowAnthropicHeaderOverrides": false,
+          "supportsEagerToolInputStreaming": true,
+          "supportsLongCacheRetention": true,
+          "supportsMidConversationSystem": true,
+          "supportsTurnScopedSystem": true,
+          "supportsMidConversationToolChanges": true,
+          "supportsPerMessageEffort": false,
+          "supportsThinkingBindingControls": false,
+          "supportsForcedToolChoice": true,
+          "supportsSamplingParams": false,
+          "requiresToolResultId": false,
+          "requiresThinkingEnabled": false,
+          "replayUnsignedThinking": false,
+          "escapeBuiltinToolNames": false,
+          "injectClaudeCodeInstruction": true,
+          "stripImageInput": false
+        }
+      },
+      "thinkingLevel": "xhigh",
+      "contextUsage": {
+        "tokens": 28020,
+        "contextWindow": 1000000,
+        "percent": 2.802
+      },
+      "participants": [
+        {
+          "name": "trace-host",
+          "role": "host"
+        },
+        {
+          "name": "trace-capture",
+          "role": "guest"
+        }
+      ]
+    },
+    "agents": [
+      {
+        "id": "Main",
+        "displayName": "main",
+        "kind": "main",
+        "status": "running",
+        "hasSessionFile": false,
+        "createdAt": 1789398686583,
+        "lastActivity": 1789398686605
+      }
+    ],
+    "entryCount": 2
+  },
+  {
+    "t": "snapshot-chunk",
+    "entries": [
+      {
+        "type": "model_change",
+        "id": "9a77ece3",
+        "parentId": null,
+        "timestamp": "2026-09-14T15:11:26.593Z",
+        "model": "anthropic/claude-opus-4-8",
+        "resolvedModelIsFallback": false
+      },
+      {
+        "type": "thinking_level_change",
+        "id": "117a8a5f",
+        "parentId": "9a77ece3",
+        "timestamp": "2026-09-14T15:11:26.594Z",
+        "thinkingLevel": "xhigh",
+        "configured": null
+      }
+    ],
+    "final": true
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "notice",
+      "level": "info",
+      "message": "trace-capture joined the collab session",
+      "source": "collab"
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "agent_start"
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "turn_start"
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_start",
+      "message": {
+        "role": "custom",
+        "customType": "collab-prompt",
+        "content": "Use the bash tool to run: echo pong. Then reply with the single word: done",
+        "display": true,
+        "details": {
+          "from": "trace-capture"
+        },
+        "attribution": "user",
+        "timestamp": 1789398707898
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "custom",
+        "customType": "collab-prompt",
+        "content": "Use the bash tool to run: echo pong. Then reply with the single word: done",
+        "display": true,
+        "details": {
+          "from": "trace-capture"
+        },
+        "attribution": "user",
+        "timestamp": 1789398707898
+      }
+    }
+  },
+  {
+    "t": "entry",
+    "entry": {
+      "type": "custom_message",
+      "customType": "collab-prompt",
+      "content": "Use the bash tool to run: echo pong. Then reply with the single word: done",
+      "display": true,
+      "details": {
+        "from": "trace-capture"
+      },
+      "attribution": "user",
+      "id": "ff8ace86",
+      "parentId": "117a8a5f",
+      "timestamp": "2026-09-14T15:11:47.898Z"
+    }
+  },
+  {
+    "t": "state",
+    "state": {
+      "isStreaming": true,
+      "isAborting": false,
+      "queuedMessageCount": 0,
+      "cwd": "/tmp/project",
+      "model": {
+        "id": "claude-opus-4-8",
+        "name": "Claude Opus 4.8",
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "reasoning": true,
+        "input": ["text", "image"],
+        "cost": {
+          "input": 5,
+          "output": 25,
+          "cacheRead": 0.5,
+          "cacheWrite": 6.25
+        },
+        "contextWindow": 1000000,
+        "maxTokens": 128000,
+        "int": 57.3,
+        "tps": 61.5,
+        "thinking": {
+          "mode": "anthropic-adaptive",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsDisplay": true
+        },
+        "identity": {
+          "class": "anthropic",
+          "family": "opus",
+          "revision": "4.8.0"
+        },
+        "requiresGlyphTokenization": true,
+        "tokenizer": "claude-v47",
+        "supportsComputerUse": false,
+        "compat": {
+          "officialEndpoint": true,
+          "signingEndpoint": true,
+          "supportsContextManagement": true,
+          "supportsServerCompaction": true,
+          "firstPartyProvider": true,
+          "supportsOutputEffort": true,
+          "disableStrictTools": false,
+          "disableAdaptiveThinking": false,
+          "allowAnthropicHeaderOverrides": false,
+          "supportsEagerToolInputStreaming": true,
+          "supportsLongCacheRetention": true,
+          "supportsMidConversationSystem": true,
+          "supportsTurnScopedSystem": true,
+          "supportsMidConversationToolChanges": true,
+          "supportsPerMessageEffort": false,
+          "supportsThinkingBindingControls": false,
+          "supportsForcedToolChoice": true,
+          "supportsSamplingParams": false,
+          "requiresToolResultId": false,
+          "requiresThinkingEnabled": false,
+          "replayUnsignedThinking": false,
+          "escapeBuiltinToolNames": false,
+          "injectClaudeCodeInstruction": true,
+          "stripImageInput": false
+        }
+      },
+      "thinkingLevel": "xhigh",
+      "contextUsage": {
+        "tokens": 28020,
+        "contextWindow": 1000000,
+        "percent": 2.802
+      },
+      "participants": [
+        {
+          "name": "trace-host",
+          "role": "host"
+        },
+        {
+          "name": "trace-capture",
+          "role": "guest"
+        }
+      ]
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_start",
+        "contentIndex": 0,
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+              "name": "bash",
+              "arguments": {
+                "command": "ech"
+              }
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 20,
+            "cacheRead": 21843,
+            "cacheWrite": 10556,
+            "totalTokens": 32421,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.0005,
+              "cacheRead": 0.010921499999999999,
+              "cacheWrite": 0.10556000000000001,
+              "total": 0.11699150000000001
+            },
+            "cttl": {
+              "ephemeral1h": 10556
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1789398707946,
+          "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK"
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "ech"
+            }
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 20,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32421,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0005,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11699150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK"
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_start",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "ech"
+            }
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 20,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32421,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0005,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11699150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK"
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+              "name": "bash",
+              "arguments": {
+                "command": "ech"
+              }
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 20,
+            "cacheRead": 21843,
+            "cacheWrite": 10556,
+            "totalTokens": 32421,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.0005,
+              "cacheRead": 0.010921499999999999,
+              "cacheWrite": 0.10556000000000001,
+              "total": 0.11699150000000001
+            },
+            "cttl": {
+              "ephemeral1h": 10556
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1789398707946,
+          "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK"
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "ech"
+            }
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 20,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32421,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0005,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11699150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK"
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "{\"command\": \"ech",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+              "name": "bash",
+              "arguments": {
+                "command": "ech"
+              }
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 20,
+            "cacheRead": 21843,
+            "cacheWrite": 10556,
+            "totalTokens": 32421,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.0005,
+              "cacheRead": 0.010921499999999999,
+              "cacheWrite": 0.10556000000000001,
+              "total": 0.11699150000000001
+            },
+            "cttl": {
+              "ephemeral1h": 10556
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1789398707946,
+          "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK"
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "ech"
+            }
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 20,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32421,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0005,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11699150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK"
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "o pong",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+              "name": "bash",
+              "arguments": {
+                "command": "echo pong",
+                "i": "Running echo pong"
+              }
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 76,
+            "cacheRead": 21843,
+            "cacheWrite": 10556,
+            "totalTokens": 32477,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.0019,
+              "cacheRead": 0.010921499999999999,
+              "cacheWrite": 0.10556000000000001,
+              "total": 0.11839150000000001
+            },
+            "cttl": {
+              "ephemeral1h": 10556
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1789398707946,
+          "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+          "duration": 2659.521199999999,
+          "ttft": 1040.4036000000015
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "echo pong",
+              "i": "Running echo pong"
+            }
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 76,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32477,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0019,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11839150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+        "duration": 2659.521199999999,
+        "ttft": 1040.4036000000015
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "\", \"i\": \"Running echo pong",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+              "name": "bash",
+              "arguments": {
+                "command": "echo pong",
+                "i": "Running echo pong"
+              }
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 76,
+            "cacheRead": 21843,
+            "cacheWrite": 10556,
+            "totalTokens": 32477,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.0019,
+              "cacheRead": 0.010921499999999999,
+              "cacheWrite": 0.10556000000000001,
+              "total": 0.11839150000000001
+            },
+            "cttl": {
+              "ephemeral1h": 10556
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1789398707946,
+          "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+          "duration": 2659.521199999999,
+          "ttft": 1040.4036000000015
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "echo pong",
+              "i": "Running echo pong"
+            }
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 76,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32477,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0019,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11839150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+        "duration": 2659.521199999999,
+        "ttft": 1040.4036000000015
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "\"}",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+              "name": "bash",
+              "arguments": {
+                "command": "echo pong",
+                "i": "Running echo pong"
+              }
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 76,
+            "cacheRead": 21843,
+            "cacheWrite": 10556,
+            "totalTokens": 32477,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.0019,
+              "cacheRead": 0.010921499999999999,
+              "cacheWrite": 0.10556000000000001,
+              "total": 0.11839150000000001
+            },
+            "cttl": {
+              "ephemeral1h": 10556
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1789398707946,
+          "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+          "duration": 2659.521199999999,
+          "ttft": 1040.4036000000015
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "echo pong",
+              "i": "Running echo pong"
+            }
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 76,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32477,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0019,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11839150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+        "duration": 2659.521199999999,
+        "ttft": 1040.4036000000015
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "toolcall_end",
+        "contentIndex": 0,
+        "toolCall": {
+          "type": "toolCall",
+          "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+          "name": "bash",
+          "arguments": {
+            "command": "echo pong",
+            "i": "Running echo pong"
+          }
+        },
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+              "name": "bash",
+              "arguments": {
+                "command": "echo pong",
+                "i": "Running echo pong"
+              }
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 76,
+            "cacheRead": 21843,
+            "cacheWrite": 10556,
+            "totalTokens": 32477,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.0019,
+              "cacheRead": 0.010921499999999999,
+              "cacheWrite": 0.10556000000000001,
+              "total": 0.11839150000000001
+            },
+            "cttl": {
+              "ephemeral1h": 10556
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1789398707946,
+          "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+          "duration": 2659.521199999999,
+          "ttft": 1040.4036000000015
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "echo pong",
+              "i": "Running echo pong"
+            }
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 76,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32477,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0019,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11839150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+        "duration": 2659.521199999999,
+        "ttft": 1040.4036000000015
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "echo pong",
+              "i": "Running echo pong"
+            },
+            "intent": "Running echo pong"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 76,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32477,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0019,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11839150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+        "duration": 2659.521199999999,
+        "ttft": 1040.4036000000015,
+        "completedAt": 1789398710629,
+        "contextSnapshot": {
+          "promptTokens": 32401,
+          "nonMessageTokens": 28020,
+          "compactionEpoch": 0
+        }
+      }
+    }
+  },
+  {
+    "t": "entry",
+    "entry": {
+      "type": "message",
+      "id": "74e49840",
+      "parentId": "ff8ace86",
+      "timestamp": "2026-09-14T15:11:50.635Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "echo pong",
+              "i": "Running echo pong"
+            },
+            "intent": "Running echo pong"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 76,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32477,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0019,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11839150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+        "duration": 2659.521199999999,
+        "ttft": 1040.4036000000015,
+        "completedAt": 1789398710629,
+        "contextSnapshot": {
+          "promptTokens": 32401,
+          "nonMessageTokens": 28020,
+          "compactionEpoch": 0
+        }
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "tool_execution_start",
+      "toolCallId": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+      "toolName": "bash",
+      "args": {
+        "command": "echo pong"
+      },
+      "intent": "Running echo pong"
+    }
+  },
+  {
+    "t": "state",
+    "state": {
+      "isStreaming": true,
+      "isAborting": false,
+      "queuedMessageCount": 0,
+      "cwd": "/tmp/project",
+      "model": {
+        "id": "claude-opus-4-8",
+        "name": "Claude Opus 4.8",
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "reasoning": true,
+        "input": ["text", "image"],
+        "cost": {
+          "input": 5,
+          "output": 25,
+          "cacheRead": 0.5,
+          "cacheWrite": 6.25
+        },
+        "contextWindow": 1000000,
+        "maxTokens": 128000,
+        "int": 57.3,
+        "tps": 61.5,
+        "thinking": {
+          "mode": "anthropic-adaptive",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsDisplay": true
+        },
+        "identity": {
+          "class": "anthropic",
+          "family": "opus",
+          "revision": "4.8.0"
+        },
+        "requiresGlyphTokenization": true,
+        "tokenizer": "claude-v47",
+        "supportsComputerUse": false,
+        "compat": {
+          "officialEndpoint": true,
+          "signingEndpoint": true,
+          "supportsContextManagement": true,
+          "supportsServerCompaction": true,
+          "firstPartyProvider": true,
+          "supportsOutputEffort": true,
+          "disableStrictTools": false,
+          "disableAdaptiveThinking": false,
+          "allowAnthropicHeaderOverrides": false,
+          "supportsEagerToolInputStreaming": true,
+          "supportsLongCacheRetention": true,
+          "supportsMidConversationSystem": true,
+          "supportsTurnScopedSystem": true,
+          "supportsMidConversationToolChanges": true,
+          "supportsPerMessageEffort": false,
+          "supportsThinkingBindingControls": false,
+          "supportsForcedToolChoice": true,
+          "supportsSamplingParams": false,
+          "requiresToolResultId": false,
+          "requiresThinkingEnabled": false,
+          "replayUnsignedThinking": false,
+          "escapeBuiltinToolNames": false,
+          "injectClaudeCodeInstruction": true,
+          "stripImageInput": false
+        }
+      },
+      "thinkingLevel": "xhigh",
+      "contextUsage": {
+        "tokens": 32401,
+        "contextWindow": 1000000,
+        "percent": 3.2401
+      },
+      "participants": [
+        {
+          "name": "trace-host",
+          "role": "host"
+        },
+        {
+          "name": "trace-capture",
+          "role": "guest"
+        }
+      ]
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "tool_execution_update",
+      "toolCallId": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+      "toolName": "bash",
+      "args": {
+        "command": "echo pong"
+      },
+      "partialResult": {
+        "content": [
+          {
+            "type": "text",
+            "text": "pong\n"
+          }
+        ],
+        "details": {}
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "tool_execution_update",
+      "toolCallId": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+      "toolName": "bash",
+      "args": {
+        "command": "echo pong"
+      },
+      "partialResult": {
+        "content": [
+          {
+            "type": "text",
+            "text": "pong\n\n\nWall time: 0.09 seconds"
+          }
+        ],
+        "details": {
+          "timeoutSeconds": 300,
+          "wallTimeMs": 91.91460000000006
+        }
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "tool_execution_end",
+      "toolCallId": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+      "toolName": "bash",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "pong\n\n\nWall time: 0.09 seconds"
+          }
+        ],
+        "details": {
+          "timeoutSeconds": 300,
+          "wallTimeMs": 91.91460000000006
+        }
+      },
+      "isError": false
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_start",
+      "message": {
+        "role": "toolResult",
+        "toolCallId": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+        "toolName": "bash",
+        "content": [
+          {
+            "type": "text",
+            "text": "pong\n\n\nWall time: 0.09 seconds"
+          }
+        ],
+        "details": {
+          "timeoutSeconds": 300,
+          "wallTimeMs": 91.91460000000006
+        },
+        "isError": false,
+        "timestamp": 1789398710731
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "toolResult",
+        "toolCallId": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+        "toolName": "bash",
+        "content": [
+          {
+            "type": "text",
+            "text": "pong\n\n\nWall time: 0.09 seconds"
+          }
+        ],
+        "details": {
+          "timeoutSeconds": 300,
+          "wallTimeMs": 91.91460000000006
+        },
+        "isError": false,
+        "timestamp": 1789398710731
+      }
+    }
+  },
+  {
+    "t": "entry",
+    "entry": {
+      "type": "message",
+      "id": "b99d4b6c",
+      "parentId": "1af26ee0",
+      "timestamp": "2026-09-14T15:11:50.732Z",
+      "message": {
+        "role": "toolResult",
+        "toolCallId": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+        "toolName": "bash",
+        "content": [
+          {
+            "type": "text",
+            "text": "pong\n\n\nWall time: 0.09 seconds"
+          }
+        ],
+        "details": {
+          "timeoutSeconds": 300,
+          "wallTimeMs": 91.91460000000006
+        },
+        "isError": false,
+        "timestamp": 1789398710731
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "turn_end",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+            "name": "bash",
+            "arguments": {
+              "command": "echo pong",
+              "i": "Running echo pong"
+            },
+            "intent": "Running echo pong"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 76,
+          "cacheRead": 21843,
+          "cacheWrite": 10556,
+          "totalTokens": 32477,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.0019,
+            "cacheRead": 0.010921499999999999,
+            "cacheWrite": 0.10556000000000001,
+            "total": 0.11839150000000001
+          },
+          "cttl": {
+            "ephemeral1h": 10556
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1789398707946,
+        "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+        "duration": 2659.521199999999,
+        "ttft": 1040.4036000000015
+      },
+      "toolResults": [
+        {
+          "role": "toolResult",
+          "toolCallId": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "pong\n\n\nWall time: 0.09 seconds"
+            }
+          ],
+          "details": {
+            "timeoutSeconds": 300,
+            "wallTimeMs": 91.91460000000006
+          },
+          "isError": false,
+          "timestamp": 1789398710731
+        }
+      ]
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "turn_start"
+    }
+  },
+  {
+    "t": "state",
+    "state": {
+      "isStreaming": true,
+      "isAborting": false,
+      "queuedMessageCount": 0,
+      "cwd": "/tmp/project",
+      "model": {
+        "id": "claude-opus-4-8",
+        "name": "Claude Opus 4.8",
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "reasoning": true,
+        "input": ["text", "image"],
+        "cost": {
+          "input": 5,
+          "output": 25,
+          "cacheRead": 0.5,
+          "cacheWrite": 6.25
+        },
+        "contextWindow": 1000000,
+        "maxTokens": 128000,
+        "int": 57.3,
+        "tps": 61.5,
+        "thinking": {
+          "mode": "anthropic-adaptive",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsDisplay": true
+        },
+        "identity": {
+          "class": "anthropic",
+          "family": "opus",
+          "revision": "4.8.0"
+        },
+        "requiresGlyphTokenization": true,
+        "tokenizer": "claude-v47",
+        "supportsComputerUse": false,
+        "compat": {
+          "officialEndpoint": true,
+          "signingEndpoint": true,
+          "supportsContextManagement": true,
+          "supportsServerCompaction": true,
+          "firstPartyProvider": true,
+          "supportsOutputEffort": true,
+          "disableStrictTools": false,
+          "disableAdaptiveThinking": false,
+          "allowAnthropicHeaderOverrides": false,
+          "supportsEagerToolInputStreaming": true,
+          "supportsLongCacheRetention": true,
+          "supportsMidConversationSystem": true,
+          "supportsTurnScopedSystem": true,
+          "supportsMidConversationToolChanges": true,
+          "supportsPerMessageEffort": false,
+          "supportsThinkingBindingControls": false,
+          "supportsForcedToolChoice": true,
+          "supportsSamplingParams": false,
+          "requiresToolResultId": false,
+          "requiresThinkingEnabled": false,
+          "replayUnsignedThinking": false,
+          "escapeBuiltinToolNames": false,
+          "injectClaudeCodeInstruction": true,
+          "stripImageInput": false
+        }
+      },
+      "thinkingLevel": "xhigh",
+      "contextUsage": {
+        "tokens": 32417,
+        "contextWindow": 1000000,
+        "percent": 3.2417000000000002
+      },
+      "participants": [
+        {
+          "name": "trace-host",
+          "role": "host"
+        },
+        {
+          "name": "trace-capture",
+          "role": "guest"
+        }
+      ]
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "text_start",
+        "contentIndex": 0,
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "done"
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 1,
+            "cacheRead": 32399,
+            "cacheWrite": 97,
+            "totalTokens": 32499,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.000025,
+              "cacheRead": 0.0161995,
+              "cacheWrite": 0.00097,
+              "total": 0.017204499999999998
+            },
+            "cttl": {
+              "ephemeral1h": 97
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1789398710759,
+          "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy"
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 1,
+          "cacheRead": 32399,
+          "cacheWrite": 97,
+          "totalTokens": 32499,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.000025,
+            "cacheRead": 0.0161995,
+            "cacheWrite": 0.00097,
+            "total": 0.017204499999999998
+          },
+          "cttl": {
+            "ephemeral1h": 97
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398710759,
+        "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy"
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "done",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "done"
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 1,
+            "cacheRead": 32399,
+            "cacheWrite": 97,
+            "totalTokens": 32499,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.000025,
+              "cacheRead": 0.0161995,
+              "cacheWrite": 0.00097,
+              "total": 0.017204499999999998
+            },
+            "cttl": {
+              "ephemeral1h": 97
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1789398710759,
+          "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy"
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 1,
+          "cacheRead": 32399,
+          "cacheWrite": 97,
+          "totalTokens": 32499,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.000025,
+            "cacheRead": 0.0161995,
+            "cacheWrite": 0.00097,
+            "total": 0.017204499999999998
+          },
+          "cttl": {
+            "ephemeral1h": 97
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398710759,
+        "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy"
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_start",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 1,
+          "cacheRead": 32399,
+          "cacheWrite": 97,
+          "totalTokens": 32499,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.000025,
+            "cacheRead": 0.0161995,
+            "cacheWrite": 0.00097,
+            "total": 0.017204499999999998
+          },
+          "cttl": {
+            "ephemeral1h": 97
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398710759,
+        "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy"
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_update",
+      "assistantMessageEvent": {
+        "type": "text_end",
+        "contentIndex": 0,
+        "content": "done",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "done"
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 3,
+            "cacheRead": 32399,
+            "cacheWrite": 97,
+            "totalTokens": 32501,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.00007500000000000001,
+              "cacheRead": 0.0161995,
+              "cacheWrite": 0.00097,
+              "total": 0.0172545
+            },
+            "cttl": {
+              "ephemeral1h": 97
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1789398710759,
+          "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy",
+          "duration": 846.1556999999993,
+          "ttft": 763.8819000000003
+        }
+      },
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 3,
+          "cacheRead": 32399,
+          "cacheWrite": 97,
+          "totalTokens": 32501,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.00007500000000000001,
+            "cacheRead": 0.0161995,
+            "cacheWrite": 0.00097,
+            "total": 0.0172545
+          },
+          "cttl": {
+            "ephemeral1h": 97
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398710759,
+        "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy",
+        "duration": 846.1556999999993,
+        "ttft": 763.8819000000003
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "message_end",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 3,
+          "cacheRead": 32399,
+          "cacheWrite": 97,
+          "totalTokens": 32501,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.00007500000000000001,
+            "cacheRead": 0.0161995,
+            "cacheWrite": 0.00097,
+            "total": 0.0172545
+          },
+          "cttl": {
+            "ephemeral1h": 97
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398710759,
+        "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy",
+        "duration": 846.1556999999993,
+        "ttft": 763.8819000000003,
+        "completedAt": 1789398711626,
+        "contextSnapshot": {
+          "promptTokens": 32498,
+          "nonMessageTokens": 28020,
+          "compactionEpoch": 0
+        },
+        "errorId": 0
+      }
+    }
+  },
+  {
+    "t": "entry",
+    "entry": {
+      "type": "message",
+      "id": "b3de1fba",
+      "parentId": "b99d4b6c",
+      "timestamp": "2026-09-14T15:11:51.626Z",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 3,
+          "cacheRead": 32399,
+          "cacheWrite": 97,
+          "totalTokens": 32501,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.00007500000000000001,
+            "cacheRead": 0.0161995,
+            "cacheWrite": 0.00097,
+            "total": 0.0172545
+          },
+          "cttl": {
+            "ephemeral1h": 97
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398710759,
+        "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy",
+        "duration": 846.1556999999993,
+        "ttft": 763.8819000000003,
+        "completedAt": 1789398711626,
+        "contextSnapshot": {
+          "promptTokens": 32498,
+          "nonMessageTokens": 28020,
+          "compactionEpoch": 0
+        },
+        "errorId": 0
+      }
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "turn_end",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "usage": {
+          "input": 2,
+          "output": 3,
+          "cacheRead": 32399,
+          "cacheWrite": 97,
+          "totalTokens": 32501,
+          "cost": {
+            "input": 0.00001,
+            "output": 0.00007500000000000001,
+            "cacheRead": 0.0161995,
+            "cacheWrite": 0.00097,
+            "total": 0.0172545
+          },
+          "cttl": {
+            "ephemeral1h": 97
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1789398710759,
+        "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy",
+        "duration": 846.1556999999993,
+        "ttft": 763.8819000000003
+      },
+      "toolResults": []
+    }
+  },
+  {
+    "t": "event",
+    "event": {
+      "type": "agent_end",
+      "messages": [
+        {
+          "role": "custom",
+          "customType": "collab-prompt",
+          "content": "Use the bash tool to run: echo pong. Then reply with the single word: done",
+          "display": true,
+          "details": {
+            "from": "trace-capture"
+          },
+          "attribution": "user",
+          "timestamp": 1789398707898
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+              "name": "bash",
+              "arguments": {
+                "command": "echo pong",
+                "i": "Running echo pong"
+              },
+              "intent": "Running echo pong"
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 76,
+            "cacheRead": 21843,
+            "cacheWrite": 10556,
+            "totalTokens": 32477,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.0019,
+              "cacheRead": 0.010921499999999999,
+              "cacheWrite": 0.10556000000000001,
+              "total": 0.11839150000000001
+            },
+            "cttl": {
+              "ephemeral1h": 10556
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1789398707946,
+          "responseId": "msg_011Cf3YfKdUtqbJLpHfZQMXK",
+          "duration": 2659.521199999999,
+          "ttft": 1040.4036000000015
+        },
+        {
+          "role": "toolResult",
+          "toolCallId": "toolu_0191h8B1yJ19SgF1zKfNKjpD",
+          "toolName": "bash",
+          "content": [
+            {
+              "type": "text",
+              "text": "pong\n\n\nWall time: 0.09 seconds"
+            }
+          ],
+          "details": {
+            "timeoutSeconds": 300,
+            "wallTimeMs": 91.91460000000006
+          },
+          "isError": false,
+          "timestamp": 1789398710731
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "done"
+            }
+          ],
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-opus-4-8",
+          "usage": {
+            "input": 2,
+            "output": 3,
+            "cacheRead": 32399,
+            "cacheWrite": 97,
+            "totalTokens": 32501,
+            "cost": {
+              "input": 0.00001,
+              "output": 0.00007500000000000001,
+              "cacheRead": 0.0161995,
+              "cacheWrite": 0.00097,
+              "total": 0.0172545
+            },
+            "cttl": {
+              "ephemeral1h": 97
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1789398710759,
+          "responseId": "msg_011Cf3YfXU7owSucMSa2TJdy",
+          "duration": 846.1556999999993,
+          "ttft": 763.8819000000003
+        }
+      ],
+      "isTerminal": true
+    }
+  },
+  {
+    "t": "state",
+    "state": {
+      "isStreaming": false,
+      "isAborting": false,
+      "queuedMessageCount": 0,
+      "cwd": "/tmp/project",
+      "model": {
+        "id": "claude-opus-4-8",
+        "name": "Claude Opus 4.8",
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "baseUrl": "https://api.anthropic.com/v1",
+        "reasoning": true,
+        "input": ["text", "image"],
+        "cost": {
+          "input": 5,
+          "output": 25,
+          "cacheRead": 0.5,
+          "cacheWrite": 6.25
+        },
+        "contextWindow": 1000000,
+        "maxTokens": 128000,
+        "int": 57.3,
+        "tps": 61.5,
+        "thinking": {
+          "mode": "anthropic-adaptive",
+          "efforts": ["low", "medium", "high", "xhigh", "max"],
+          "supportsDisplay": true
+        },
+        "identity": {
+          "class": "anthropic",
+          "family": "opus",
+          "revision": "4.8.0"
+        },
+        "requiresGlyphTokenization": true,
+        "tokenizer": "claude-v47",
+        "supportsComputerUse": false,
+        "compat": {
+          "officialEndpoint": true,
+          "signingEndpoint": true,
+          "supportsContextManagement": true,
+          "supportsServerCompaction": true,
+          "firstPartyProvider": true,
+          "supportsOutputEffort": true,
+          "disableStrictTools": false,
+          "disableAdaptiveThinking": false,
+          "allowAnthropicHeaderOverrides": false,
+          "supportsEagerToolInputStreaming": true,
+          "supportsLongCacheRetention": true,
+          "supportsMidConversationSystem": true,
+          "supportsTurnScopedSystem": true,
+          "supportsMidConversationToolChanges": true,
+          "supportsPerMessageEffort": false,
+          "supportsThinkingBindingControls": false,
+          "supportsForcedToolChoice": true,
+          "supportsSamplingParams": false,
+          "requiresToolResultId": false,
+          "requiresThinkingEnabled": false,
+          "replayUnsignedThinking": false,
+          "escapeBuiltinToolNames": false,
+          "injectClaudeCodeInstruction": true,
+          "stripImageInput": false
+        }
+      },
+      "thinkingLevel": "xhigh",
+      "contextUsage": {
+        "tokens": 32498,
+        "contextWindow": 1000000,
+        "percent": 3.2498
+      },
+      "participants": [
+        {
+          "name": "trace-host",
+          "role": "host"
+        },
+        {
+          "name": "trace-capture",
+          "role": "guest"
+        }
+      ]
+    }
+  }
+]

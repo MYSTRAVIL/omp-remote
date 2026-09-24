@@ -1,0 +1,12 @@
+{
+  "name": "@omp-remote/agent",
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "@omp-remote/config": "workspace:*",
+    "@omp-remote/protocol": "workspace:*",
+    "@omp-remote/crypto": "workspace:*",
+    "@oh-my-pi/pi-wire": "18.2.5",
+    "zod": "^4.0.0"
+  }
+}

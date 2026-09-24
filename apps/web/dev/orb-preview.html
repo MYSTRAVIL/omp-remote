@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>thinking-orbs preview</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: var(--canvas, #000);
+        color: var(--text, #fff);
+        font-family: var(--sans, system-ui, sans-serif);
+      }
+      #preview {
+        max-width: 760px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .preview-heading {
+        margin: 28px 0 4px;
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted, #9aa);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+      }
+      .cell {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        padding: 18px 10px 14px;
+        border: 1px solid var(--border, #222);
+        border-radius: 10px;
+        background: var(--surface, #060606);
+      }
+      .cell-orbs {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-height: 64px;
+      }
+      .cell-name {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .cell-blurb {
+        font-size: 11px;
+        color: var(--muted, #9aa);
+        text-align: center;
+      }
+      .preview-bottom {
+        border: 1px solid var(--border, #222);
+        border-radius: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="preview"></div>
+    <script src="./orb-preview.js"></script>
+  </body>
+</html>

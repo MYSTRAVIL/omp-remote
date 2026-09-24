@@ -1,0 +1,17 @@
+{
+  "name": "@omp-remote/cli",
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "omp-remote": "src/main.ts"
+  },
+  "dependencies": {
+    "@omp-remote/agent": "workspace:*",
+    "@omp-remote/aggregator": "workspace:*",
+    "@omp-remote/config": "workspace:*",
+    "@omp-remote/crypto": "workspace:*",
+    "@omp-remote/protocol": "workspace:*",
+    "uqr": "^0.1.3",
+    "zod": "^4"
+  }
+}

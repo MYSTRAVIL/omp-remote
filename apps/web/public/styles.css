@@ -1,0 +1,3252 @@
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/geist-latin-variable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/geist-mono-latin-variable.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: dark;
+  --canvas: #000000;
+  --surface: #000000;
+  --surface-hover: #0a0a0a;
+  --text: #e6e3dc;
+  --muted: #aaa69f;
+  --border: #514d48;
+  /* Status colors carry meaning, never brand: red only for errors, green for
+     done, success and online, yellow for waiting, blocked or needs-you. */
+  --danger: #ff3b35;
+  --ok: #35c46b;
+  --warn: #f2c14e;
+  /* The accent is titanium, not a hue: selection edges, small markers,
+     progress, the brand mark. */
+  --accent: #e6e3dc;
+  --surface-raised: #191712;
+  --focus: #e6e3dc;
+  /* A select's chevron, drawn in --muted. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3 6 5 5 5-5' fill='none' stroke='%23AAA69F' stroke-width='1.5' stroke-linecap='square'/%3E%3C/svg%3E");
+  /* Dims the page behind a dialog or the model drawer. */
+  --scrim: #000000cc;
+  /* The orbs paint light ink for a dark canvas; a light palette mirrors it. */
+  --orb-filter: none;
+  /* The information mark before a status line, drawn in --text. */
+  --status-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M3 3h14v14H3zM10 9v5M10 6v1' fill='none' stroke='%23E6E3DC' stroke-width='1.5' stroke-linecap='square'/%3E%3C/svg%3E");
+  /* Settings > Appearance > Density scales the vertical rhythm of the session
+     list, settings rows and the conversation; 1 is the spacing as designed. */
+  --density: 1;
+  --sans: "Geist", Arial, sans-serif;
+  --mono: "Geist Mono", Consolas, monospace;
+  --cut-panel: 18px;
+  --cut-well: 10px;
+  --cut-control: 5px;
+  --cut-small: 2px;
+  --conversation-width: 820px;
+  --settle: cubic-bezier(0.2, 0.7, 0.2, 1);
+  font-family: var(--sans);
+  font-size: 16px;
+  font-weight: 400;
+  font-synthesis: none;
+  background: var(--canvas);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Settings > Appearance: core/appearance-preferences.ts sets data-theme and
+   data-density on the root. Dark, above, is the default. Light, and System
+   on a device set to light, repaint with this palette, whose text meets WCAG
+   AA on every surface. Both light blocks carry the same palette: keep them,
+   and --canvas with THEME_COLORS in appearance-preferences.ts, in step. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #f7f5f0;
+  --surface: #f7f5f0;
+  --surface-hover: #edeae3;
+  --text: #1c1a17;
+  --muted: #625d55;
+  --border: #a39c92;
+  --danger: #c4211b;
+  --ok: #1b7f45;
+  --warn: #8a5c00;
+  --accent: #1c1a17;
+  --surface-raised: #e9e5dc;
+  --focus: #1c1a17;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3 6 5 5 5-5' fill='none' stroke='%23625D55' stroke-width='1.5' stroke-linecap='square'/%3E%3C/svg%3E");
+  --scrim: #1c1a1780;
+  --orb-filter: invert(1);
+  --status-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M3 3h14v14H3zM10 9v5M10 6v1' fill='none' stroke='%231C1A17' stroke-width='1.5' stroke-linecap='square'/%3E%3C/svg%3E");
+}
+@media (prefers-color-scheme: light) {
+  :root[data-theme="system"] {
+    color-scheme: light;
+    --canvas: #f7f5f0;
+    --surface: #f7f5f0;
+    --surface-hover: #edeae3;
+    --text: #1c1a17;
+    --muted: #625d55;
+    --border: #a39c92;
+    --danger: #c4211b;
+    --ok: #1b7f45;
+    --warn: #8a5c00;
+    --accent: #1c1a17;
+    --surface-raised: #e9e5dc;
+    --focus: #1c1a17;
+    --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3 6 5 5 5-5' fill='none' stroke='%23625D55' stroke-width='1.5' stroke-linecap='square'/%3E%3C/svg%3E");
+    --scrim: #1c1a1780;
+    --orb-filter: invert(1);
+    --status-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M3 3h14v14H3zM10 9v5M10 6v1' fill='none' stroke='%231C1A17' stroke-width='1.5' stroke-linecap='square'/%3E%3C/svg%3E");
+  }
+}
+:root[data-density="compact"] {
+  --density: 0.625;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+[hidden] {
+  display: none !important;
+}
+/* The document never scrolls: each screen scrolls its own region. */
+html,
+body {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body {
+  background: var(--canvas);
+}
+/* The shell is pinned to the viewport, so a document scroll offset (such as
+   one a reload restores) cannot slide it, and the composer, off screen.
+   app-shell.ts keeps --app-top/--app-height on the visual viewport. */
+#app {
+  position: fixed;
+  top: var(--app-top, 0px);
+  left: 0;
+  display: flow-root;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  height: var(--app-height, 100dvh);
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+button,
+summary,
+label,
+a,
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+button,
+a {
+  touch-action: manipulation;
+}
+button {
+  color: inherit;
+  cursor: pointer;
+}
+button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+button,
+input,
+textarea,
+select,
+dialog {
+  border-radius: 0;
+}
+input,
+textarea,
+select {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.5;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+input:disabled,
+textarea:disabled,
+select:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--focus);
+}
+textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+}
+select {
+  cursor: pointer;
+}
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--text);
+}
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+}
+a {
+  color: var(--text);
+  text-underline-offset: 4px;
+}
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+fieldset {
+  min-inline-size: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+legend {
+  max-width: 100%;
+  padding: 0;
+}
+::selection {
+  background: var(--text);
+  color: var(--canvas);
+}
+
+/* Ordinary actions stay neutral. The titanium accent marks selection and
+   progress; status colors mark only errors, waiting and done. */
+.icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}
+.button {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 10px 15px;
+  border: 1px solid transparent;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-decoration: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  transition: background-color 140ms var(--settle), border-color 140ms;
+}
+.button.primary {
+  border-color: var(--muted);
+  box-shadow: inset 0 -2px 0 var(--muted);
+  font-weight: 600;
+}
+.button.secondary {
+  border-color: var(--border);
+}
+.button.quiet {
+  color: var(--muted);
+  background: transparent;
+}
+.button.primary:disabled,
+.button.secondary:disabled {
+  border-color: var(--border);
+  box-shadow: none;
+}
+.button:disabled {
+  color: var(--muted);
+}
+.button.icon-button {
+  width: 44px;
+  padding: 10px;
+  flex: 0 0 44px;
+}
+.icon-button .button-label,
+.back .button-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.eyebrow,
+.meta {
+  font-family: var(--mono);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.eyebrow {
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  white-space: nowrap;
+}
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+.brand-mark .icon {
+  width: 26px;
+  height: 26px;
+}
+.brand-name {
+  font-size: 23px;
+  font-weight: 500;
+  letter-spacing: -0.05em;
+}
+.brand-suffix {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: -0.025em;
+}
+.skip-link {
+  position: fixed;
+  top: -100px;
+  left: calc(16px + env(safe-area-inset-left));
+  z-index: 10;
+  padding: 14px 18px;
+  border: 1px solid var(--muted);
+  background: var(--canvas);
+  color: var(--text);
+}
+.skip-link:focus {
+  top: calc(16px + env(safe-area-inset-top));
+}
+
+/* A joined navigation frame, not a collection of dashboard cards. */
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  overflow: hidden;
+  background: var(--canvas);
+}
+.workspace-rail {
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface);
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+.rail-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 24px 24px 20px;
+}
+/* ui/connection-status.ts: the relay link, always on. Green while connected,
+   a pulsing warning while it dials, still grey without a network. A button
+   that redials while the link is down. It is always in place, so a drop
+   moves nothing. */
+.connection-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.connection-status:disabled {
+  cursor: default;
+}
+.connection-status:not(:disabled) .connection-status-label {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.connection-status[hidden] {
+  display: none;
+}
+.connection-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.connection-status[data-state="connecting"] .connection-status-dot,
+.connection-status[data-state="reconnecting"] .connection-status-dot {
+  background: var(--warn);
+  animation: pending-pulse 1.5s ease-in-out infinite;
+}
+.connection-status[data-state="offline"] .connection-status-dot {
+  background: var(--muted);
+}
+/* In a session's header, the dot alone; the label stays for screen readers
+   and the tooltip. On wide screens the rail beside it already shows it. */
+.session-header .connection-status {
+  position: relative;
+  justify-content: center;
+  min-width: 44px;
+}
+.session-header .connection-status-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.nav-sessions {
+  display: none;
+}
+.rail-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px 22px;
+}
+.rail-heading::before {
+  content: "";
+  width: 4px;
+  height: 18px;
+  flex: 0 0 4px;
+  border-top: 4px solid var(--muted);
+  background: var(--border);
+}
+.rail-title {
+  font-size: 30px;
+  line-height: 1.2;
+  font-weight: 500;
+  letter-spacing: -0.035em;
+}
+.rail-section-label {
+  display: none;
+}
+.tree {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 18px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--canvas);
+}
+.machine-group + .machine-group {
+  border-top: 1px solid var(--border);
+  padding-top: calc(24px * var(--density));
+  margin-top: calc(26px * var(--density));
+}
+.machine-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 6px;
+  min-height: 28px;
+}
+.machine-heading > .icon {
+  width: 17px;
+  height: 17px;
+  color: var(--muted);
+}
+.machine {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  font-weight: 500;
+  color: var(--text);
+}
+.machine-count {
+  margin-left: auto;
+  padding-left: 8px;
+  text-align: right;
+}
+/* Sits just left of the count, which keeps its place when the label clears. */
+.machine-updating,
+.machine-offline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding-left: 8px;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.machine-updating::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pending-pulse 1.5s ease-in-out infinite;
+}
+/* A hollow mark: nothing is on its way from an offline machine. Offline is
+   neither an error nor a wait on you, so it stays muted. */
+.machine-offline::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border: 1px solid currentColor;
+}
+.machine-updating:not([hidden]) ~ .machine-count,
+.machine-offline:not([hidden]) ~ .machine-count {
+  margin-left: 0;
+}
+/* The cached rows stay fully usable; the fade only hints they may change. */
+.machine-projects {
+  transition: opacity 0.2s ease;
+}
+.machine-group[data-stale] .machine-projects {
+  opacity: 0.86;
+}
+/* An offline machine's last known sessions stay open to read, dimmed. */
+.machine-group[data-offline] .machine-projects {
+  opacity: 0.7;
+}
+.project-group {
+  margin-top: calc(18px * var(--density));
+}
+.project {
+  padding: 0 7px 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.project-sessions {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.session {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: calc(72px * var(--density));
+  padding: calc(12px * var(--density)) 12px calc(12px * var(--density)) 16px;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: var(--surface);
+  text-align: left;
+  color: var(--text);
+  transition: background-color 140ms var(--settle);
+}
+.session + .session {
+  border-top: 1px solid var(--border);
+}
+.session::before {
+  content: "";
+  position: absolute;
+  top: calc(16px * var(--density));
+  bottom: calc(16px * var(--density));
+  left: 0;
+  width: 3px;
+  background: transparent;
+}
+.session.is-selected {
+  background: var(--surface-hover);
+}
+.session.is-selected::before {
+  background: var(--accent);
+}
+.session:focus-visible {
+  z-index: 1;
+  outline-offset: -5px;
+}
+.session-row-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+}
+.session-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 500;
+}
+.session-row-orb {
+  flex: none;
+  opacity: 0.85;
+  filter: var(--orb-filter);
+}
+.session-row-model {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session > .icon {
+  color: var(--muted);
+  width: 14px;
+  height: 14px;
+}
+.session-status-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* A running omp session the host-agent cannot stream (its Collab host
+   stopped): kept in the list, dimmed, with a visible "Unreachable" label. */
+.session.is-unreachable .session-row-copy,
+.session.is-unreachable .session-row-orb {
+  opacity: 0.5;
+}
+.session.is-unreachable .session-status-label {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+/* A resting session pulses a colored border: green finished, yellow waiting
+   on you, red errored. The 1px border stays lit while an inset glow breathes
+   in and out (contained so the list keeps its cut corners). */
+.session[data-pulse] {
+  z-index: 1;
+  --pulse: var(--accent);
+}
+.session[data-pulse="done"] {
+  --pulse: var(--ok);
+}
+.session[data-pulse="question"] {
+  --pulse: var(--warn);
+}
+.session[data-pulse="error"] {
+  --pulse: var(--danger);
+}
+.session[data-pulse]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid var(--pulse);
+  animation: session-pulse 1.9s var(--settle) infinite;
+}
+@keyframes session-pulse {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--pulse) 60%, transparent);
+  }
+  50% {
+    box-shadow: inset 0 0 9px 1px
+      color-mix(in srgb, var(--pulse) 60%, transparent);
+  }
+}
+.machine-empty {
+  color: var(--muted);
+  padding: 16px 6px 4px;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.rail-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 16px 20px calc(18px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+}
+.rail-footer .new-session {
+  justify-content: center;
+}
+.workspace.has-session .settings,
+.workspace.has-session .empty-pair {
+  display: none;
+}
+.tree-empty {
+  padding: 30px 6px;
+  max-width: 370px;
+  margin: auto;
+}
+.empty-mark,
+.workspace-start-mark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+.empty-mark .icon,
+.workspace-start-mark .icon {
+  width: 25px;
+  height: 25px;
+}
+.empty-title {
+  font-weight: 500;
+  font-size: 23px;
+  line-height: 1.3;
+  letter-spacing: -0.025em;
+}
+.empty-copy {
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.7;
+  margin-top: 12px;
+}
+.empty-pair {
+  margin-top: 24px;
+}
+.connecting-mark {
+  color: var(--accent);
+  animation: pending-pulse 1.8s ease-in-out infinite;
+}
+.workspace-content {
+  grid-row: 1;
+  display: none;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.workspace-content:focus-visible,
+.feed:focus-visible {
+  outline-offset: -5px;
+}
+.workspace.has-session .workspace-rail {
+  display: none;
+}
+.workspace.has-session .workspace-content {
+  display: block;
+}
+.workspace-start {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 48px;
+  overflow-y: auto;
+}
+.workspace-start-inner {
+  width: 100%;
+  max-width: 490px;
+}
+.workspace-start-mark {
+  margin-bottom: 32px;
+}
+.workspace-start-title {
+  font-size: 42px;
+  font-weight: 500;
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+  margin-top: 14px;
+}
+.workspace-start-copy {
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.75;
+  margin: 22px 0 28px;
+}
+.workspace-start-meta {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* The conversation remains an open reading column; only tools are disclosed wells. */
+.session-view {
+  display: grid;
+  position: relative;
+  isolation: isolate;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+/* The session's orb, blown up and blurred as an ambient chat wallpaper. It sits
+   behind the feed (z-index -1) so header/composer surfaces cover it; low opacity
+   plus a soft radial mask keep the reading column legible. */
+.session-wallpaper {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.42;
+  filter: blur(4px) saturate(1.2);
+  -webkit-mask-image: radial-gradient(
+    120% 78% at 50% 44%,
+    #000 42%,
+    transparent 90%
+  );
+  mask-image: radial-gradient(120% 78% at 50% 44%, #000 42%, transparent 90%);
+}
+.session-wallpaper-orb {
+  width: min(76vmin, 560px) !important;
+  height: min(76vmin, 560px) !important;
+  filter: var(--orb-filter);
+}
+.session-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 86px;
+  padding: calc(12px + env(safe-area-inset-top))
+    calc(12px + env(safe-area-inset-right)) 12px
+    calc(8px + env(safe-area-inset-left));
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.back {
+  width: 44px;
+  padding: 10px;
+  flex: 0 0 44px;
+}
+.session-heading {
+  flex: 1;
+  min-width: 0;
+}
+.session-location {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 4px;
+}
+.session-title {
+  font-size: 18px;
+  line-height: 1.35;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Header title/location: fit with an ellipsis, but scroll end-to-end and back
+   when the text overflows. JS sets --marquee-shift/-duration and toggles
+   is-scrolling; reduced motion keeps the plain ellipsis. */
+.session-title-inner,
+.session-location-inner {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  vertical-align: bottom;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.is-scrolling > .session-title-inner,
+.is-scrolling > .session-location-inner {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  animation: header-marquee var(--marquee-duration, 9s) var(--settle) infinite
+    alternate;
+}
+@keyframes header-marquee {
+  0%,
+  12% {
+    transform: translateX(0);
+  }
+  88%,
+  100% {
+    transform: translateX(var(--marquee-shift, 0));
+  }
+}
+.attention-button {
+  flex: 0 0 auto;
+  border-color: var(--border);
+  box-shadow: inset 3px 0 0 var(--warn);
+  padding: 9px 11px 9px 13px;
+  color: var(--text);
+  font-size: 12px;
+}
+.feed {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--canvas);
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+  scroll-padding-block: 20px;
+}
+.conversation-column {
+  max-width: var(--conversation-width);
+  margin: 0 auto;
+  padding: 28px calc(20px + env(safe-area-inset-right)) 20px
+    calc(20px + env(safe-area-inset-left));
+}
+.transcript-empty {
+  padding: 45px 0 55px;
+  max-width: 480px;
+}
+.transcript-empty .eyebrow {
+  margin-bottom: 14px;
+  display: block;
+}
+/* Settings > Chat > Text size sets this on the transcript; message text and
+   tool output scale with it. */
+.transcript {
+  --chat-text-size: 16px;
+}
+.transcript.text-small {
+  --chat-text-size: 14px;
+}
+.transcript.text-large {
+  --chat-text-size: 18px;
+}
+.message {
+  margin: 0 0 calc(32px * var(--density));
+  min-width: 0;
+}
+.transcript > :last-child {
+  margin-bottom: 0;
+}
+.role {
+  display: flex;
+  min-height: 21px;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: calc(10px * var(--density));
+}
+/* The host's time beside a message's role, while Settings > Chat > Timestamps is on. */
+.message-time {
+  letter-spacing: 0.02em;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+.message-assistant .role {
+  color: var(--text);
+}
+.message-user {
+  width: fit-content;
+  max-width: min(88%, 620px);
+  margin: 7px 0 calc(36px * var(--density)) auto;
+  padding: calc(12px * var(--density)) 16px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+}
+.message-user .role {
+  justify-content: flex-end;
+  color: var(--text);
+}
+.text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: var(--chat-text-size, 16px);
+  line-height: 1.75;
+}
+.text > :first-child {
+  margin-top: 0;
+}
+.text > :last-child {
+  margin-bottom: 0;
+}
+.text p {
+  margin: 0 0 12px;
+}
+.text ul,
+.text ol {
+  margin: 0 0 12px;
+  padding-left: 1.5em;
+}
+.text li {
+  margin: 3px 0;
+}
+.text h1,
+.text h2,
+.text h3,
+.text h4,
+.text h5,
+.text h6 {
+  margin: 16px 0 8px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.text h1 {
+  font-size: 1.4em;
+}
+.text h2 {
+  font-size: 1.25em;
+}
+.text h3 {
+  font-size: 1.1em;
+}
+.text code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--surface-hover);
+}
+.text pre {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  white-space: pre;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+}
+.text pre code {
+  padding: 0;
+  background: none;
+}
+.text blockquote {
+  margin: 0 0 12px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+}
+.text a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.text hr {
+  margin: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.text .table-wrap {
+  margin: 0 0 12px;
+  overflow-x: auto;
+}
+.text table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.text th,
+.text td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.text th {
+  font-weight: 600;
+  background: var(--surface);
+}
+.message-user .text {
+  white-space: pre-wrap;
+}
+.message-other .text,
+.message-thinking {
+  color: var(--muted);
+}
+.message-thinking .role {
+  display: list-item;
+  min-height: 44px;
+  padding: 13px 0;
+  margin-bottom: 0;
+  cursor: pointer;
+}
+.message-thinking .text {
+  padding: 6px 0 12px 14px;
+  border-left: 1px solid var(--border);
+}
+.message-media {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.message-media:empty {
+  display: none;
+}
+.media-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.media-loading,
+.media-error {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+.media-image {
+  cursor: zoom-in;
+}
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.94);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+.image-viewer-stage {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.image-viewer-img {
+  max-width: 100%;
+  max-height: 100%;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  will-change: transform;
+  cursor: grab;
+}
+.image-viewer-bar {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  right: 12px;
+  display: flex;
+  gap: 8px;
+}
+/* A bottom pill toast: the image viewer's "Saved" and the app-update line. */
+.image-viewer-toast,
+.update-notice {
+  position: fixed;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.85em;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.image-viewer-toast.show,
+.update-notice.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+/* ui/update-notice.ts, on the body over every screen. With a session open it
+   sits just above the composer; elsewhere near the bottom edge, clear of the
+   home indicator. One compact line, so the send button stays reachable.
+   Without CSS anchor positioning it cannot know where the composer is, so it
+   sits at the top instead, where the persistent Reload offer covers no control
+   the user needs while a draft is open. */
+.update-notice {
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  max-width: calc(
+    100vw -
+    24px -
+    env(safe-area-inset-left) -
+    env(safe-area-inset-right)
+  );
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  bottom: auto;
+}
+@supports (anchor-name: --a) {
+  .update-notice {
+    top: auto;
+    bottom: calc(
+      anchor(
+        --session-bottom top,
+        calc(env(safe-area-inset-bottom, 0px) + 12px)
+      ) +
+      12px
+    );
+  }
+}
+.update-notice.show {
+  pointer-events: auto;
+}
+.update-notice.is-offer {
+  padding: 4px 4px 4px 18px;
+}
+.update-notice-reload {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--muted);
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font-weight: 600;
+}
+.message.pending {
+  opacity: 0.65;
+}
+.message.pending .role {
+  color: var(--accent);
+  animation: pending-pulse 1.5s ease-in-out infinite;
+}
+@keyframes pending-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.spawn-spinner {
+  width: 30px;
+  height: 30px;
+  margin: 0 auto;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spawn-spin 0.9s linear infinite;
+}
+@keyframes spawn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spawn-spinner {
+    animation: none;
+  }
+}
+.tool-card {
+  margin: calc(10px * var(--density)) 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.tool-summary {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  gap: 10px;
+  padding: 11px 13px;
+  cursor: pointer;
+  list-style: none;
+}
+.tool-summary::-webkit-details-marker {
+  display: none;
+}
+.tool-summary > .icon:first-child {
+  color: var(--muted);
+  width: 17px;
+  height: 17px;
+}
+.tool-summary > .icon:last-child {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  transition: transform 140ms var(--settle);
+}
+.tool-card[open] .tool-summary,
+.approval-input-details[open] .details-summary {
+  background: var(--surface-hover);
+}
+.tool-card[open] .tool-summary > .icon:last-child {
+  transform: rotate(90deg);
+}
+.tool-card:not(.done) .tool-summary {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.tool-name {
+  flex: 0 0 auto;
+  margin: 0 10px;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.tool-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.tool-status {
+  max-width: 45%;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: right;
+}
+.tool-preview,
+.approval-input {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  max-height: min(380px, 50dvh);
+  margin: 0;
+  padding: 15px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.65;
+  tab-size: 2;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--canvas);
+}
+.transcript .tool-preview {
+  font-size: calc(var(--chat-text-size) - 2px);
+}
+.tool-card + .message {
+  margin-top: calc(32px * var(--density));
+}
+/* A host notice (a background result, a reminder): a tool card labelled by
+   its kind, previewing its first line, with the markdown body underneath. */
+.notice-card .message-time {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.notice-body {
+  padding: 15px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+}
+.notice-card .message-media {
+  margin: 0;
+  padding: 0 14px 14px;
+}
+
+/* Requests attach to the transcript without turning the entire feed into cards. */
+.interaction-queue {
+  margin-top: 40px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.queue-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.queue-heading::before {
+  content: "";
+  width: 4px;
+  height: 13px;
+  flex: 0 0 4px;
+  background: var(--warn);
+}
+.interaction-list {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.interaction-card {
+  position: relative;
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  scroll-margin-top: 20px;
+}
+/* Questions and approvals wait on the reader: a yellow tab on each card. */
+.interaction-card::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 22px;
+  width: 38px;
+  height: 3px;
+  background: var(--warn);
+}
+.interaction-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+.attention-mark {
+  width: 8px;
+  height: 12px;
+  flex: 0 0 8px;
+  border: 1px solid var(--muted);
+  border-top-width: 3px;
+}
+.interaction-title {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 500;
+}
+.question + .question {
+  border-top: 1px solid var(--border);
+  margin-top: 28px;
+  padding-top: 28px;
+}
+.question-title {
+  display: block;
+  width: 100%;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}
+.question-number {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.05em;
+}
+.question-hint {
+  margin: 10px 0 16px;
+}
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.question-option {
+  display: flex;
+  min-height: 54px;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  transition: background-color 140ms var(--settle), border-color 140ms;
+}
+.question-option:has(input:checked) {
+  background: var(--surface-hover);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.question-option:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+}
+.question-option input {
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  flex: 0 0 20px;
+  margin: 2px 0 0;
+  padding: 0;
+  cursor: inherit;
+}
+.question-option input:focus-visible {
+  outline: none;
+}
+.question-option:has(input:disabled) {
+  cursor: not-allowed;
+}
+.question-option:has(input:disabled) .option-copy {
+  color: var(--muted);
+}
+.option-copy {
+  min-width: 0;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.option-label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+  align-items: baseline;
+}
+.option-description {
+  display: block;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+  margin-top: 5px;
+}
+.recommended {
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.question-input {
+  min-height: 100px;
+  max-height: 280px;
+}
+.question > .field {
+  margin-top: 16px;
+  margin-bottom: 0;
+}
+.interaction-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+}
+.interaction-actions .field-hint {
+  flex: 1;
+  min-width: 150px;
+  font-size: 12px;
+}
+.interaction-status {
+  margin-top: 16px;
+}
+.approval-urgency {
+  margin-top: -10px;
+  padding-left: 11px;
+  border-left: 1px solid var(--muted);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+.approval-tool {
+  font-family: var(--mono);
+  font-size: 16px;
+  line-height: 1.5;
+  margin-top: 24px;
+  overflow-wrap: anywhere;
+}
+.approval-reason {
+  margin-top: 12px;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.approval-input-details {
+  border: 1px solid var(--border);
+  margin-top: 18px;
+}
+.details-summary {
+  min-height: 44px;
+  padding: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+.approval-choice {
+  min-width: 90px;
+  flex: 1 1 100px;
+  overflow-wrap: anywhere;
+}
+.unsupported-choices {
+  margin-top: 16px;
+}
+
+/* Persistent one-row composer; only its text input grows with the draft. */
+.session-bottom {
+  position: relative;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  /* The update notice sits just above the open session's composer. */
+  anchor-name: --session-bottom;
+}
+/* One fixed gap between the composer's rows (input, attachments, controls,
+   notices). A hidden row takes no box and adds no gap, so the space between
+   the input and the control row never depends on the attachment list. */
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: var(--conversation-width);
+  padding: 10px calc(12px + env(safe-area-inset-right)) 0
+    calc(12px + env(safe-area-inset-left));
+  margin: auto;
+}
+.composer-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+.attach-button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+}
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+}
+.attachment {
+  position: relative;
+  width: 64px;
+}
+.attachment-thumb {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+.attachment.error .attachment-thumb {
+  border-color: var(--danger);
+  opacity: 0.6;
+}
+.attachment-bar {
+  height: 3px;
+  margin-top: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.attachment-fill {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+.attachment.ready .attachment-fill {
+  background: var(--muted);
+}
+.attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.composer-input {
+  height: 44px;
+  min-height: 44px;
+  max-height: min(164px, 25dvh);
+  padding: 9px 11px;
+  line-height: 1.5;
+  resize: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--canvas);
+}
+.composer .send {
+  min-width: 76px;
+  min-height: 44px;
+  padding: 10px 12px;
+}
+.interrupt .icon {
+  width: 14px;
+  height: 14px;
+}
+.composer-menu {
+  position: fixed;
+  inset: auto;
+  z-index: 4;
+  width: 220px;
+  max-width: calc(
+    100vw -
+    24px -
+    env(safe-area-inset-left) -
+    env(safe-area-inset-right)
+  );
+  max-height: calc(100dvh - 24px);
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text);
+  overflow-y: auto;
+}
+.composer-menu .button {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+}
+.composer-menu .interrupt {
+  margin-top: 4px;
+  border-top-color: var(--border);
+  color: var(--muted);
+}
+.composer-menu .button:focus-visible {
+  outline-offset: -3px;
+}
+.composer-error {
+  margin: 0;
+}
+.composer-ended {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+/* Model + effort chip that opens the picker, in the composer control row. */
+.model-chip {
+  min-height: 44px;
+  max-width: 100%;
+  padding: 8px 12px;
+  justify-content: flex-start;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* A short banner shown while a question locks the composer: waiting on you. */
+.composer-pending-notice {
+  margin: 0;
+  padding: 8px 11px;
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--warn);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.composer.pending-blocked .composer-input {
+  opacity: 0.55;
+}
+/* The session's machine is offline: the draft stays, Send waits. Empty (and
+   so hidden) while the machine is online. */
+.composer-offline-notice {
+  margin: 0;
+  padding: 8px 11px;
+  color: var(--text);
+  background: var(--surface-hover);
+  border: 1px solid var(--warn);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.composer-offline-notice:empty {
+  display: none;
+}
+/* Model / role / effort picker: a bottom sheet on phones, centered card wider up. */
+.model-drawer {
+  width: 100%;
+  max-width: 480px;
+  max-height: 85dvh;
+  margin: auto auto 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  overflow: hidden;
+}
+.model-drawer::backdrop {
+  background: var(--scrim, #000000cc);
+}
+/* The picker's lists, shared by the drawer and the New session dialog. */
+.model-picker-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.model-picker-title {
+  margin: 0;
+  font-size: 16px;
+}
+.model-drawer .model-picker-body {
+  max-height: calc(85dvh - 57px);
+  padding: 4px 12px 16px;
+  overflow-y: auto;
+}
+.model-picker-group {
+  margin: 12px 4px 4px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.model-picker-option,
+.drawer-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  justify-content: flex-start;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+}
+.model-picker-option:hover,
+.drawer-compact:hover {
+  background: var(--surface-hover);
+}
+.model-picker-option-detail {
+  color: var(--muted);
+  font-size: 13px;
+}
+.model-picker-option.is-current {
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+.model-picker-option.is-current::after {
+  content: "✓";
+  margin-left: auto;
+  color: var(--accent);
+}
+.drawer-compact {
+  margin-top: 12px;
+  border-color: var(--border);
+}
+.context-readout {
+  margin: 8px 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.model-picker-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 52px;
+  padding: 12px;
+  justify-content: flex-start;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 1px solid var(--border);
+}
+.model-picker-nav:hover {
+  background: var(--surface-hover);
+}
+.model-picker-nav-value {
+  margin-left: auto;
+  max-width: 55%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-picker-nav .icon {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+.model-picker-back .icon {
+  width: 18px;
+  height: 18px;
+}
+.model-picker-empty {
+  margin: 16px 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+/* Inline in New session: a bordered well whose Back row only shows inside a
+   list, and stays in view while a long model list scrolls the dialog. */
+.model-picker.is-inline {
+  border: 1px solid var(--border);
+}
+.model-picker.is-inline[data-view="root"] > .model-picker-header {
+  display: none;
+}
+.model-picker.is-inline .model-picker-header {
+  justify-content: flex-start;
+  padding: 0 12px 0 0;
+}
+.model-picker.is-inline .model-picker-title {
+  font-size: 15px;
+  font-weight: 500;
+}
+.model-picker.is-inline .model-picker-body {
+  padding: 4px;
+}
+.model-picker.is-inline .model-picker-nav:last-child {
+  border-bottom-color: transparent;
+}
+.composer-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  position: relative;
+}
+.composer-meta .model-chip {
+  flex: 1 1 auto;
+  min-width: 4.5em;
+}
+.model-chip {
+  gap: 0;
+}
+.model-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-chip-context {
+  flex: 0 0 auto;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.model-chip-context[hidden] {
+  display: none;
+}
+.model-chip-context::before {
+  content: "·";
+  margin: 0 6px;
+  opacity: 0.6;
+}
+.session-fast-mode {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font: inherit;
+  padding: 3px 9px;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+.session-fast-mode.active {
+  color: var(--text);
+  border-color: var(--accent);
+  opacity: 1;
+}
+/* Running work (async jobs, running `task` calls) between the conversation
+   and the composer. Running work stays neutral: no status hue. At most about
+   three rows show; more scroll inside the strip. */
+.jobs-strip {
+  border-bottom: 1px solid var(--border);
+}
+.jobs-strip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: var(--conversation-width);
+  max-height: 92px;
+  margin: 0 auto;
+  padding: 8px calc(12px + env(safe-area-inset-right)) 8px
+    calc(12px + env(safe-area-inset-left));
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--surface);
+}
+.jobs-strip-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 24px;
+  font-size: 13px;
+}
+.jobs-strip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.jobs-strip-type,
+.jobs-strip-elapsed {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.jobs-strip-type {
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.jobs-strip-elapsed {
+  min-width: 6ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.jump-latest {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  bottom: calc(100% + 12px);
+  transform: translateX(-50%);
+  min-width: 145px;
+  max-width: calc(100% - 40px);
+  border-color: var(--muted);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* New content arrived below while the reader was scrolled up. */
+.jump-latest.has-new {
+  border-color: var(--text);
+}
+.jump-latest.has-new::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+}
+
+/* One line shows progress and failures alike ("Starting…", "Could not start"),
+   so it stays neutral: the text carries the meaning, never the color. */
+.composer-error,
+.interaction-status,
+.pair-status,
+.spawn-status,
+.login-status {
+  position: relative;
+  padding: 11px 12px 11px 36px;
+  border-left: 2px solid var(--text);
+  color: var(--text);
+  background: var(--surface-hover);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.composer-error::before,
+.interaction-status::before,
+.pair-status::before,
+.spawn-status::before,
+.login-status::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  left: 11px;
+  width: 15px;
+  height: 15px;
+  background: var(--status-mark) center / contain no-repeat;
+}
+.composer-error:empty,
+.interaction-status:empty,
+.pair-status:empty,
+.spawn-status:empty,
+.login-status:empty {
+  display: none;
+}
+
+/* A fixed header over a body that scrolls, and a footer (New session's actions)
+   that stays in view. The height follows the dynamic viewport, which the phone
+   keyboard shrinks (interactive-widget=resizes-content), so neither end hides. */
+.workspace-dialog {
+  width: min(560px, calc(100vw - 40px));
+  max-width: calc(100vw - 40px);
+  max-height: calc(
+    100dvh -
+    40px -
+    env(safe-area-inset-top) -
+    env(safe-area-inset-bottom)
+  );
+  padding: 0;
+  margin: auto;
+  overflow: hidden;
+  border: 1px solid var(--muted);
+  background: var(--surface);
+  color: var(--text);
+}
+.workspace-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.workspace-dialog::backdrop {
+  background: var(--scrim, #000000cc);
+}
+.dialog-header {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.dialog-header::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 24px;
+  width: 38px;
+  height: 3px;
+  background: var(--accent);
+}
+.dialog-heading {
+  min-width: 0;
+}
+.dialog-heading .eyebrow {
+  margin-bottom: 7px;
+}
+.dialog-title {
+  font-size: 26px;
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+.dialog-close {
+  color: var(--muted);
+}
+.dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--canvas);
+}
+.dialog-footer {
+  flex: none;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.dialog-footer .dialog-actions {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: 0;
+}
+.section-title {
+  font-size: 17px;
+  line-height: 1.5;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+.section-copy {
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.65;
+  margin: 10px 0 22px;
+}
+/* One layout for every setting row: the label, the control, then a hint read
+   out with it (ui/choices.ts dropdowns and switches, dom.ts fields). A switch
+   sits at the end of its label's line, as does a row's action (New session's
+   Manage); every other part takes the full width. */
+.field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px 16px;
+  margin: calc(22px * var(--density)) 0;
+}
+.field > * {
+  grid-column: 1 / -1;
+}
+.field > .field-label {
+  grid-column: 1;
+}
+.field > .switch,
+.field > .field-action {
+  grid-column: 2;
+  grid-row: 1;
+}
+.field > input:not(.switch),
+.field > select,
+.field > textarea {
+  width: 100%;
+}
+/* A button under a row's hint (Try again) keeps its own width. */
+.field > .button:not(.field-action) {
+  justify-self: start;
+}
+.field-label {
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 500;
+}
+/* A switch's whole label line turns it on and off. */
+.field.is-switch > .field-label {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  cursor: pointer;
+}
+.field-hint {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.field-hint:empty {
+  display: none;
+}
+/* ui/choices.ts: every single choice is a native select with its own
+   chevron. The browser keeps the picker (Android's sheet), keyboard use and
+   the accessible name. */
+.select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 40px;
+  background: var(--surface) var(--select-chevron) no-repeat right 12px center /
+    16px 16px;
+  text-overflow: ellipsis;
+}
+.select option {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.select:disabled {
+  border-color: var(--border);
+}
+/* ui/choices.ts: every on/off preference is a checkbox drawn as a switch
+   (role=switch), a square knob that slides right and lights up when on. */
+.switch {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 48px;
+  height: 28px;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--muted);
+  background: var(--surface) linear-gradient(var(--muted), var(--muted))
+    no-repeat 4px center / 16px 18px;
+  cursor: pointer;
+  transition: background-position 140ms var(--settle), border-color 140ms,
+    background-color 140ms;
+}
+.switch:checked {
+  border-color: var(--text);
+  background-color: var(--surface-raised);
+  background-image: linear-gradient(var(--text), var(--text));
+  background-position: calc(100% - 4px) center;
+}
+.switch:disabled {
+  border-color: var(--border);
+  background-image: linear-gradient(var(--border), var(--border));
+}
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 18px;
+  margin-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.spawn-form > .section-copy {
+  margin-top: 0;
+}
+.spawn-form > :last-child {
+  margin-bottom: 0;
+}
+.spawn-cwd,
+.spawn-model,
+.pair-code {
+  font-family: var(--mono);
+  font-size: 16px;
+}
+/* New session's composite groups (Model, and in Settings each machine's
+   default model): a caption over a bordered picker and its fields. */
+.spawn-group {
+  margin: calc(22px * var(--density)) 0;
+}
+.spawn-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+  margin-bottom: 8px;
+}
+.spawn-group > .field {
+  margin: 14px 0 0;
+}
+/* New session's Project: the dropdown, Manage's list of remembered projects
+   (each with Hide and Remove) and the custom directory, one gap apart. */
+.spawn-project {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: calc(22px * var(--density)) 0;
+}
+.spawn-project > .field,
+.spawn-project > .settings-machines {
+  margin: 0;
+}
+/* Settings > Notifications and Account: Try again sits under the line saying
+   what failed. */
+.push-retry,
+.account-retry {
+  margin-top: 12px;
+}
+/* Settings: a labelled group of related fields (Default project, Default model). */
+.settings-fieldset {
+  min-width: 0;
+  margin: calc(22px * var(--density)) 0;
+  padding: 0;
+  border: 0;
+}
+.settings-fieldset > legend {
+  margin-bottom: 12px;
+  padding: 0;
+}
+/* Rows inside a group keep the same gap as any two rows, starting under the
+   group's legend. */
+.default-projects .field,
+.default-models .spawn-group {
+  margin: 0 0 calc(22px * var(--density));
+}
+.default-projects .field:last-child,
+.default-models .spawn-group:last-child {
+  margin-bottom: 0;
+}
+.default-projects .field-label,
+.default-models .field-label {
+  font-family: var(--mono);
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.default-models .field .field-label {
+  font-family: inherit;
+  font-weight: 500;
+}
+.settings-fieldset + .settings-subtitle {
+  margin-top: 28px;
+}
+/* Online reads green: a small square before the status, here and in About. */
+.settings-machine-status.is-online {
+  color: var(--text);
+}
+.settings-machine-status.is-online::before,
+.about-connection-status.is-online::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  vertical-align: 0.05em;
+  background: var(--ok);
+}
+.pair-status {
+  margin-top: 16px;
+  font-family: var(--mono);
+}
+.dialog-footer .spawn-status {
+  margin-bottom: 14px;
+}
+/* Parked outside a mounted workspace (before the first one, after sign-out),
+   the status line is never painted over the pinned shell. */
+body > .pair-status {
+  display: none;
+}
+/* Uniform sections; a rule divides each from the visible one before it, so a
+   hidden section (Account in local dev) never leaves a stray divider on top. */
+.settings-section:not([hidden]) ~ .settings-section {
+  margin-top: calc(28px * var(--density));
+  border-top: 1px solid var(--border);
+  padding-top: calc(26px * var(--density));
+}
+.settings-subtitle {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 500;
+}
+.preference-status:not(:empty) {
+  margin-top: 12px;
+  color: var(--text);
+}
+/* Machine rows sit in a bordered well, like the rail's session list. */
+.settings-machines {
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+}
+.settings-machines-empty {
+  margin-top: 12px;
+}
+.settings-machine {
+  padding: calc(14px * var(--density)) 16px;
+}
+.settings-machine + .settings-machine {
+  border-top: 1px solid var(--border);
+}
+.settings-machine-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+.settings-machine-copy {
+  display: flex;
+  flex: 1 1 180px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.settings-machine-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.settings-machine-copy .meta {
+  overflow-wrap: anywhere;
+}
+.settings-machine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.settings-machine-rename,
+.settings-machine-confirm {
+  margin-top: 14px;
+}
+.settings-machine-rename .field {
+  margin: 0;
+}
+/* Notify when away for: a setting row under the machine's summary. */
+.settings-machine > .field {
+  margin: 14px 0 0;
+}
+.settings-machine-label {
+  font-family: var(--mono);
+}
+.settings-machine-question {
+  margin-bottom: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.settings-machine-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 14px;
+}
+/* Settings > Account: Keep me signed in under Sign out, then Passkeys and
+   Sign out everywhere under their own subtitles. A passkey row reuses the
+   machine row; "This device" sits beside the passkey's name. */
+.account-keep {
+  margin-top: calc(28px * var(--density));
+}
+.account-settings .settings-subtitle {
+  margin-top: calc(28px * var(--density));
+}
+.settings-passkey-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+.settings-passkey-device {
+  color: var(--text);
+}
+.account-only-passkey {
+  margin-top: 12px;
+}
+.pair-form {
+  margin-top: 28px;
+}
+/* The code to compare with the host's: an identifier, so mono and large. */
+.pair-prompt-sas {
+  margin-top: 16px;
+  font-family: var(--mono);
+  font-size: 24px;
+  letter-spacing: 0.08em;
+}
+.settings-link {
+  width: 100%;
+  margin-top: 16px;
+  justify-content: space-between;
+  text-align: left;
+}
+.settings-link .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.security-facts {
+  margin: 20px 0 0;
+}
+.security-label {
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 500;
+}
+.security-description {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.65;
+  margin: 6px 0 20px;
+}
+.security-description:last-child {
+  margin-bottom: 0;
+}
+/* Settings > About: the build, the relay and machine lines, and the updates
+   this browser took. */
+.about-build {
+  margin-bottom: 0;
+}
+.about-settings .settings-subtitle {
+  margin-top: calc(28px * var(--density));
+}
+.about-connection {
+  display: grid;
+  grid-template-columns: fit-content(50%) minmax(0, 1fr);
+  gap: calc(8px * var(--density)) 16px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.about-connection-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.about-connection-status {
+  margin: 0;
+  color: var(--muted);
+}
+.about-connection-status.is-online {
+  color: var(--text);
+}
+.about-updates {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.about-update {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding: calc(8px * var(--density)) 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.about-update + .about-update {
+  border-top: 1px solid var(--border);
+}
+.about-update-build {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.about-update-time {
+  color: var(--muted);
+}
+
+.login {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: calc(28px + env(safe-area-inset-top))
+    calc(24px + env(safe-area-inset-right))
+    calc(24px + env(safe-area-inset-bottom))
+    calc(24px + env(safe-area-inset-left));
+  background: var(--canvas);
+}
+.login-story {
+  min-width: 0;
+}
+.login-introduction {
+  margin: 44px 0 32px;
+}
+.login-title {
+  white-space: pre-line;
+  margin-top: 16px;
+  font-size: clamp(36px, 10vw, 46px);
+  line-height: 1.08;
+  font-weight: 500;
+  letter-spacing: -0.035em;
+}
+.login-copy {
+  max-width: 470px;
+  margin-top: 20px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.7;
+}
+.login-privacy {
+  display: none;
+}
+.login-panel {
+  min-width: 0;
+}
+.login-card {
+  position: relative;
+  padding: 26px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.login-card::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 22px;
+  width: 44px;
+  height: 3px;
+  background: var(--accent);
+}
+.login-card-mark {
+  display: none;
+}
+.login-card-title {
+  font-size: 24px;
+  line-height: 1.3;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+.login-card-copy {
+  margin-top: 12px;
+  margin-bottom: 24px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.65;
+}
+.login-card .button {
+  width: 100%;
+  min-height: 48px;
+}
+.login-remember {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.login-remember .login-remember-check {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 26px 0 18px;
+}
+.login-divider::before,
+.login-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--border);
+}
+.login-registration-hint {
+  color: var(--muted);
+  margin: 14px 2px 0;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.login-status {
+  margin-top: 16px;
+}
+.login-security {
+  font-size: 11px;
+  line-height: 1.8;
+  letter-spacing: 0.025em;
+  text-align: center;
+  margin-top: 24px;
+}
+
+@media (hover: hover) {
+  .button:not(:disabled):hover,
+  .session:hover,
+  .tool-summary:hover,
+  .details-summary:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+  .button.primary:not(:disabled):hover {
+    border-color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--text);
+  }
+  .button.secondary:not(:disabled):hover,
+  .question-option:not(:has(input:disabled)):hover {
+    border-color: var(--muted);
+    background: var(--surface-hover);
+  }
+  .select:not(:disabled):hover,
+  .switch:not(:disabled):hover {
+    border-color: var(--text);
+  }
+}
+
+@media (max-width: 599px) {
+  :root {
+    --cut-panel: 14px;
+  }
+  .workspace-dialog {
+    width: calc(
+      100vw -
+      24px -
+      env(safe-area-inset-left) -
+      env(safe-area-inset-right)
+    );
+    max-width: calc(
+      100vw -
+      24px -
+      env(safe-area-inset-left) -
+      env(safe-area-inset-right)
+    );
+    max-height: calc(
+      100dvh -
+      24px -
+      env(safe-area-inset-top) -
+      env(safe-area-inset-bottom)
+    );
+  }
+  .dialog-header {
+    gap: 12px;
+    padding: 20px;
+  }
+  .dialog-body {
+    padding: 20px;
+  }
+  .dialog-footer {
+    padding: 14px 20px;
+  }
+  .dialog-actions .button,
+  .settings-machine-buttons .button,
+  .settings-machine-actions .button {
+    flex: 1 1 110px;
+  }
+  .settings-machine-actions {
+    flex: 1 1 100%;
+  }
+  .interaction-card {
+    padding: 20px 18px;
+  }
+}
+
+@media (min-width: 900px) {
+  .workspace {
+    width: calc(100% - 32px);
+    height: calc(100% - 32px);
+    margin: 16px;
+    border: 1px solid var(--border);
+    grid-template-columns: 296px minmax(0, 1fr);
+  }
+  .workspace-rail,
+  .workspace.has-session .workspace-rail {
+    display: flex;
+    border-right: 1px solid var(--border);
+  }
+  .workspace-content {
+    display: block;
+  }
+  .rail-brand {
+    padding: 26px 24px;
+  }
+  .nav-sessions {
+    display: flex;
+    justify-content: flex-start;
+    margin: 0 18px 26px;
+    border-color: var(--border);
+    color: var(--text);
+    font-size: 14px;
+  }
+  .workspace:not(.has-session) .nav-sessions {
+    background: var(--surface-hover);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .nav-sessions .icon {
+    width: 17px;
+    height: 17px;
+    color: var(--muted);
+  }
+  .rail-heading {
+    padding: 0 24px 16px;
+  }
+  .rail-heading::before {
+    height: 13px;
+    border-top-width: 3px;
+  }
+  .rail-title {
+    font-size: 11px;
+    line-height: 1.5;
+    text-transform: uppercase;
+    font-family: var(--mono);
+    font-weight: 400;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+  }
+  .tree {
+    padding: 0 16px 24px;
+  }
+  .session {
+    min-height: calc(68px * var(--density));
+    padding-right: 10px;
+    gap: 8px;
+  }
+  .session-row-title {
+    font-size: 14px;
+  }
+  .session > .icon {
+    width: 12px;
+    height: 12px;
+  }
+  .rail-footer {
+    grid-template-columns: 1fr;
+    padding: 18px 20px calc(18px + env(safe-area-inset-bottom));
+  }
+  .rail-footer .settings {
+    justify-content: flex-start;
+  }
+  .rail-footer .settings .icon {
+    width: 17px;
+    height: 17px;
+    color: var(--muted);
+  }
+  .tree-empty {
+    padding: 30px 7px;
+  }
+  .tree-empty .empty-title {
+    font-size: 21px;
+  }
+  .tree-empty .empty-copy {
+    font-size: 14px;
+  }
+  .session-header {
+    min-height: 90px;
+    padding: 20px 32px;
+    gap: 20px;
+  }
+  .session-title {
+    font-size: 23px;
+  }
+  .session-location {
+    margin-bottom: 6px;
+  }
+  .session-header .back,
+  .session-header .connection-status {
+    display: none;
+  }
+  .attention-button {
+    padding-right: 14px;
+    padding-left: 16px;
+  }
+  .conversation-column {
+    padding-top: 40px;
+    padding-bottom: 56px;
+  }
+  .message {
+    margin-bottom: calc(36px * var(--density));
+  }
+  .message-user {
+    margin-top: 2px;
+    margin-bottom: calc(40px * var(--density));
+  }
+  .interaction-card {
+    padding: 26px;
+  }
+  .composer {
+    padding: 12px 20px 0;
+  }
+  .login {
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
+    padding: 0;
+  }
+  .login-story {
+    display: flex;
+    flex-direction: column;
+    padding: 48px 54px 40px;
+    border-right: 1px solid var(--border);
+  }
+  .login-introduction {
+    margin: auto 0;
+    padding: 70px 0;
+  }
+  .login-title {
+    font-size: clamp(48px, 4.8vw, 72px);
+    line-height: 1.04;
+    margin-top: 23px;
+  }
+  .login-copy {
+    max-width: 420px;
+    margin-top: 28px;
+  }
+  .login-privacy {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.65;
+    max-width: 360px;
+  }
+  .login-privacy .icon {
+    width: 16px;
+    height: 16px;
+    margin-top: 3px;
+  }
+  .login-panel {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 44px;
+  }
+  .login-card {
+    max-width: 408px;
+    width: 100%;
+    padding: 34px;
+  }
+  .login-card-mark {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    border: 1px solid var(--border);
+    margin-bottom: 26px;
+    color: var(--muted);
+  }
+  .login-card-title {
+    font-size: 27px;
+  }
+  .login-security {
+    margin-top: 28px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .workspace {
+    grid-template-columns: 312px minmax(0, 1fr);
+  }
+  .login-story {
+    padding: 56px 74px 48px;
+  }
+  .login-panel {
+    padding: 60px;
+  }
+}
+
+/* Keep the feed and send controls usable when a phone keyboard reduces the viewport. */
+@media (max-height: 650px) {
+  .rail-brand {
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+  .rail-heading {
+    padding-top: 4px;
+    padding-bottom: 14px;
+  }
+  .nav-sessions {
+    margin-bottom: 18px;
+  }
+  .rail-footer {
+    padding-top: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+  .session-header {
+    min-height: 68px;
+    padding-top: calc(8px + env(safe-area-inset-top));
+    padding-bottom: 8px;
+  }
+  .conversation-column {
+    padding-top: 22px;
+    padding-bottom: 28px;
+  }
+  .dialog-header {
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+  .dialog-footer {
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+  .login-introduction {
+    margin-top: 28px;
+    margin-bottom: 28px;
+  }
+}
+
+/* Native bevels retain continuous borders and focus contours. The fallback is square. */
+/* biome-ignore lint/correctness/noUnknownProperty: Biome 1.9 predates standardized corner-shape. */
+@supports (corner-shape: bevel) {
+  .button,
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea,
+  .question-option,
+  .skip-link,
+  .workspace-dialog,
+  .composer-menu,
+  .interaction-card,
+  .login-card,
+  .project-sessions,
+  .settings-machines,
+  .switch,
+  .model-picker.is-inline,
+  .tool-card,
+  .approval-input-details,
+  .composer-input,
+  .question-input,
+  .empty-mark,
+  .workspace-start-mark,
+  .login-card-mark,
+  .tool-summary,
+  .details-summary,
+  .dialog-header,
+  .dialog-footer,
+  .model-picker.is-inline .model-picker-header,
+  .message-user,
+  .workspace {
+    /* biome-ignore lint/correctness/noUnknownProperty: Biome 1.9 predates standardized corner-shape. */
+    corner-shape: bevel;
+  }
+  .button,
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea,
+  .question-option,
+  .skip-link {
+    border-radius: var(--cut-control);
+  }
+  .workspace-dialog,
+  .interaction-card,
+  .login-card {
+    border-radius: var(--cut-panel);
+  }
+  .project-sessions,
+  .settings-machines,
+  .model-picker.is-inline,
+  .tool-card,
+  .approval-input-details,
+  .composer-menu,
+  .composer-input,
+  .question-input,
+  .empty-mark,
+  .workspace-start-mark,
+  .message-user,
+  .login-card-mark {
+    border-radius: var(--cut-well);
+  }
+  .tool-summary,
+  .details-summary {
+    border-radius: calc(var(--cut-well) - 1px);
+  }
+  .tool-card[open] .tool-summary,
+  .approval-input-details[open] .details-summary {
+    border-bottom-right-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+  .dialog-header {
+    border-radius: calc(var(--cut-panel) - 1px) calc(var(--cut-panel) - 1px) 0 0;
+  }
+  .dialog-footer {
+    border-radius: 0 0 calc(var(--cut-panel) - 1px) calc(var(--cut-panel) - 1px);
+  }
+  .model-picker.is-inline .model-picker-header {
+    border-radius: calc(var(--cut-well) - 1px) calc(var(--cut-well) - 1px) 0 0;
+  }
+  .button.icon-button,
+  .back {
+    border-radius: var(--cut-small);
+  }
+  .switch {
+    border-radius: var(--cut-small);
+  }
+  @media (min-width: 900px) {
+    .workspace {
+      border-radius: var(--cut-panel);
+    }
+  }
+  /* The pulse border follows the list's beveled corners on the end rows, so the
+     glow doesn't break into stray horizontal/vertical segments at the cut. */
+  .session[data-pulse]::after {
+    /* biome-ignore lint/correctness/noUnknownProperty: Biome 1.9 predates standardized corner-shape. */
+    corner-shape: bevel;
+  }
+  .session[data-pulse]:first-child::after {
+    border-radius: calc(var(--cut-well) - 1px) calc(var(--cut-well) - 1px) 0 0;
+  }
+  .session[data-pulse]:last-child::after {
+    border-radius: 0 0 calc(var(--cut-well) - 1px) calc(var(--cut-well) - 1px);
+  }
+  .session[data-pulse]:only-child::after {
+    border-radius: calc(var(--cut-well) - 1px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (forced-colors: active) {
+  /* Also over a chosen palette: the system's colors win. */
+  :root,
+  :root[data-theme] {
+    --focus: Highlight;
+    --accent: Highlight;
+  }
+  .session.is-selected {
+    outline: 1px solid Highlight;
+    outline-offset: -2px;
+  }
+  .session.is-selected:focus-visible {
+    outline-width: 2px;
+    outline-offset: -5px;
+  }
+  .question-option:has(input:checked) {
+    border-color: Highlight;
+  }
+  /* The drawn chevron and knob would not follow the system colors: native
+     controls return. */
+  .select {
+    appearance: auto;
+    padding-right: 12px;
+    background-image: none;
+  }
+  .switch {
+    appearance: auto;
+    width: 24px;
+    height: 24px;
+    min-height: 24px;
+    background-image: none;
+  }
+  .queue-heading::before,
+  .session.is-selected::before {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+  .session[data-pulse]::after {
+    forced-color-adjust: none;
+    border-color: Highlight;
+  }
+  .connection-status-dot {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+  }
+  .composer-error::before,
+  .interaction-status::before,
+  .pair-status::before,
+  .spawn-status::before,
+  .login-status::before {
+    background-image: none;
+    border: 1px solid CanvasText;
+  }
+  .workspace-dialog::backdrop {
+    background: Canvas;
+    opacity: 0.85;
+  }
+}

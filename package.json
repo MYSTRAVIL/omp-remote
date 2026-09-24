@@ -1,0 +1,25 @@
+{
+  "name": "omp-remote",
+  "private": true,
+  "type": "module",
+  "engines": { "bun": ">=1.4.0" },
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "typecheck": "bunx tsc -p tsconfig.base.json --noEmit",
+    "test": "bun test",
+    "lint": "biome check packages scripts apps",
+    "omp-remote": "bun run apps/cli/src/main.ts",
+    "deploy:web": "bun run scripts/deploy/web.ts",
+    "deploy:aggregator": "bun run scripts/deploy/aggregator.ts",
+    "deploy": "bun run deploy:web && bun run deploy:aggregator"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/libsodium-wrappers": "^0.8.2",
+    "bun-types": "^1.4.2",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "libsodium-wrappers": "^0.8.4"
+  }
+}

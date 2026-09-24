@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Black tile with straight opposed cuts (top-left, bottom-right) -->
+  <path fill="#000000" d="M 72 0 L 512 0 L 512 440 L 440 512 L 0 512 L 0 72 Z"/>
+  <!-- Inner frame, titanium separator tone -->
+  <path fill="none" stroke="#514D48" stroke-width="6" d="M 120 84 L 428 84 L 428 408 L 408 428 L 84 428 L 84 120 Z"/>
+  <!-- Oh My Pi's pi (short left leg) in titanium, signal bars for "remote" -->
+  <path fill="#E6E3DC" d="M 146 142 H 366 V 185 H 312 V 360 H 267 V 185 H 222 V 300 H 177 V 185 H 146 Z"/>
+  <path fill="#FFFFFF" d="M 336 336 h 10 v 24 h -10 Z M 351 318 h 10 v 42 h -10 Z M 366 300 h 10 v 60 h -10 Z"/>
+</svg>

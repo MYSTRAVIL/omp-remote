@@ -1,0 +1,4 @@
+[test]
+# Discover tests only in the product. Overnight relay worktrees live under
+# overnight/runs/*/worktrees and hold stale copies of the whole repo.
+pathIgnorePatterns = ["overnight/**", "handoffs/**", ".superpowers/**"]

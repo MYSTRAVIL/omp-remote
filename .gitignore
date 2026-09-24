@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.superpowers/
+apps/aggregator/.bun-cache/
+
+# Playwright MCP session artifacts
+.playwright-mcp/
+
+# Local session handoffs
+handoffs/
+
+# Maintainer-only material (kept in the private repo)
+memory/
+overnight/
+docs/superpowers/
+docs/ui-language/
+docs/omp-remote/STATUS.md
+docs/omp-remote/AB-TEST-*.md
+docs/omp-remote/parity-matrix.md
+docs/omp-remote/upstream-omp-collab-issue.md
