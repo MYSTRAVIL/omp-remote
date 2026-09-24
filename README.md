@@ -19,7 +19,7 @@ configured.
 2. Clone this repository and install:
 
    ```bash
-   git clone <repo-url> omp-remote
+   git clone https://github.com/MYSTRAVIL/omp-remote.git
    cd omp-remote
    bun install
    bun run --cwd apps/web build
