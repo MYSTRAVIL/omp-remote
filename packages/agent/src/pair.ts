@@ -55,6 +55,14 @@ export interface PairingResult {
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_TIMEOUT_MS = 300_000;
 
+/** No phone claimed the pairing code before it expired. */
+export class PairingTimeoutError extends Error {
+  constructor() {
+    super("pairing timed out");
+    this.name = "PairingTimeoutError";
+  }
+}
+
 /**
  * Drive the host side of the brokered pairing ceremony end to end: register a
  * pending pairing with the aggregator, show the operator the code + SAS, poll
@@ -141,7 +149,7 @@ export async function performPairing(
     }
     await sleep(pollIntervalMs);
   }
-  if (!claimed) throw new Error("pairing timed out");
+  if (!claimed) throw new PairingTimeoutError();
 
   const { phonePub, phoneMac, agentToken } = claimed;
   if (!(await verifyPeerMac(code, "phone", phonePub, phoneMac)))

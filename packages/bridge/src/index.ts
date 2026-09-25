@@ -5,12 +5,15 @@ import { basename, join } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
+  MessageEndEvent,
+  MessageUpdateEvent,
   ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
 import {
   type CatalogRole,
   type SessionMeta,
   normalizeAskQuestions,
+  parseXdevWrite,
 } from "@omp-remote/protocol";
 import { ipcPath, resolveIpcToken } from "@omp-remote/protocol/ipc";
 import {
@@ -25,6 +28,7 @@ import {
   ResourceAssembler,
 } from "./resource-assembler";
 import { SessionBridge } from "./session-bridge";
+import { isSubagentSession } from "./subagent";
 
 /**
  * Opt-in remote tool approval, from `OMP_REMOTE_APPROVAL`:
@@ -318,6 +322,9 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
   pi.setLabel("omp-remote");
   const ompConfig = readOmpConfig();
   const mediaEmitted = new Map<string, number>(); // msgId → images already sent
+  // callId → xd:// device name, so the end card keeps the device label (the end
+  // event carries no args to re-derive it from).
+  const xdevDeviceByCall = new Map<string, string>();
   let bridge: SessionBridge | undefined;
   const diagnostic = bridgeLoggerDiagnostic(pi.logger);
   // The IPC token (the per-install ipc-token file), read once per load. If it
@@ -586,7 +593,12 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     pinnedTitle = undefined;
     lastCatalogKey = undefined;
     mediaEmitted.clear();
+    xdevDeviceByCall.clear();
     attachedId = ctx.sessionManager.getSessionId();
+    // A subagent is part of its parent's run: the parent's task card and job
+    // list already show it. Announced, every `task` fan-out would add sessions
+    // the phone can only list as unreachable (a subagent hosts no Collab room).
+    if (isSubagentSession(ctx)) return;
     const token = await ipcToken;
     if (token === undefined || current !== generation) return;
     const next = new SessionBridge({
@@ -759,6 +771,10 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
   // OMP_REMOTE_APPROVAL is set.
   pi.on("tool_call", async (event) => {
     try {
+      // An `xd://` device call arrives twice: this outer `write` and a nested
+      // `tool_call` under the device's real name. Skip the outer one so the
+      // device is gated once, by its real name — never as a generic `write`.
+      if (parseXdevWrite(event.toolName, event.input)) return undefined;
       if (!shouldGate(approvalGate, event.toolName)) return undefined;
       const decision = await runToolApproval({
         id: `approval-${randomUUID()}`,
@@ -779,21 +795,25 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     }
   });
 
+  // The streaming assistant message's row and the text last sent for it. omp's
+  // `message_update` carries no message id, but every snapshot of one message
+  // shares its `timestamp`, so that keys the row.
+  let streamed: { msgId: string; text: string } | undefined;
   pi.on(
     "message_update",
-    guard((event: unknown) => {
-      const ev = event as {
-        id?: string;
-        message?: { role?: string; content?: unknown };
-      };
-      bridge?.emitMsg({
-        phase: "update",
-        msgId: ev.id ?? "m",
-        role: ev.message?.role ?? "assistant",
-        text: textOf(ev.message?.content),
-      });
-      const msgId = ev.id ?? "m";
-      const images = imagesOf(ev.message?.content);
+    guard((event: MessageUpdateEvent) => {
+      const message = event.message;
+      if (message.role !== "assistant") return;
+      const msgId = `assistant-${message.timestamp}`;
+      const text = textOf(message.content);
+      // Thinking and tool-call deltas leave the text empty or unchanged; a
+      // frame for each would only churn the sealed channel and the phone.
+      const unchanged = streamed?.msgId === msgId && streamed.text === text;
+      if (text !== "" && !unchanged) {
+        streamed = { msgId, text };
+        bridge?.emitMsg({ phase: "update", msgId, role: "assistant", text });
+      }
+      const images = imagesOf(message.content);
       if (images.length > 0) {
         const already = mediaEmitted.get(msgId) ?? 0;
         for (let i = already; i < images.length; i++) {
@@ -813,15 +833,43 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     }),
   );
 
+  // omp streams no update for a user message; it starts and ends it once the
+  // message enters the conversation: at once when idle, a steer at the next
+  // step boundary, a follow-up when its turn begins. Echo it then, so the
+  // phone confirms its optimistic send (matched by role + exact text) and
+  // shows prompts typed at the desk.
+  pi.on(
+    "message_end",
+    guard((event: MessageEndEvent) => {
+      const message = event.message;
+      if (message.role !== "user") return;
+      bridge?.emitMsg({
+        phase: "end",
+        msgId: `user-${message.timestamp}`,
+        role: "user",
+        text: textOf(message.content),
+      });
+    }),
+  );
+
   pi.on(
     "tool_execution_start",
     guard((event: unknown) => {
-      const ev = event as { toolCallId?: string; toolName?: string };
+      const ev = event as {
+        toolCallId?: string;
+        toolName?: string;
+        args?: unknown;
+      };
       if (ev.toolName === "ask") return;
+      const callId = ev.toolCallId ?? "c";
+      // An `xd://` device call surfaces here only as the outer `write`; label
+      // the card with the device's real name instead of "write".
+      const xdev = parseXdevWrite(ev.toolName, ev.args);
+      if (xdev) xdevDeviceByCall.set(callId, xdev.device);
       bridge?.emitTool({
         phase: "start",
-        callId: ev.toolCallId ?? "c",
-        name: ev.toolName ?? "tool",
+        callId,
+        name: xdev ? xdev.device : (ev.toolName ?? "tool"),
         status: "running",
         preview: "",
       });
@@ -832,10 +880,14 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     guard((event: unknown) => {
       const ev = event as { toolCallId?: string; toolName?: string };
       if (ev.toolName === "ask") return;
+      const callId = ev.toolCallId ?? "c";
+      // The end event carries no args; reuse the device name recorded at start.
+      const device = xdevDeviceByCall.get(callId);
+      xdevDeviceByCall.delete(callId);
       bridge?.emitTool({
         phase: "end",
-        callId: ev.toolCallId ?? "c",
-        name: ev.toolName ?? "tool",
+        callId,
+        name: device ?? ev.toolName ?? "tool",
         status: "done",
         preview: "",
       });

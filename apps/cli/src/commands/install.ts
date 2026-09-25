@@ -9,6 +9,7 @@ import {
   ipcTokenPath,
   restrictToOwner,
   stateDir,
+  windowsAccount,
 } from "@omp-remote/protocol/ipc";
 import { z } from "zod";
 import { defaultRouteAddress } from "../deps";
@@ -168,12 +169,13 @@ async function restrictSecrets(): Promise<void> {
     ipcTokenPath(),
     devClientSecretPath(),
   ];
+  const account = windowsAccount();
   for (const file of files) {
     if (!existsSync(file)) continue;
-    const failure = await restrictToOwner(file);
+    const failure = await restrictToOwner(file, undefined, account);
     if (failure)
       console.warn(
-        `  warning: could not restrict ${basename(file)} to ${userInfo().username} (${failure})`,
+        `  warning: could not restrict ${basename(file)} to ${account} (${failure})`,
       );
   }
 }

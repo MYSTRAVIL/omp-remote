@@ -134,6 +134,7 @@ function loadBridge(mode: "feed" | "collab", path: string) {
     get cwd() {
       return session.cwd;
     },
+    hasUI: true,
     sessionManager: { getSessionId: () => session.id },
     models: {
       current: () => ({ id: "m", provider: "p", name: "M" }),
@@ -352,4 +353,95 @@ test("collab stops polling jobs on session shutdown", async () => {
 
   await omp.fire("session_shutdown");
   expect(omp.timers.size).toBe(0);
+});
+
+/** A `message_update` as omp sends it: a snapshot of the streaming assistant
+ *  message, which carries no id; every snapshot of one message shares its
+ *  `timestamp`. */
+const assistantUpdate = (timestamp: number, ...content: unknown[]) => ({
+  type: "message_update",
+  message: { role: "assistant", content, timestamp },
+});
+const text = (value: string) => ({ type: "text", text: value });
+
+test("the feed sends an assistant message only when its text changes, one id per message", async () => {
+  const ipc = await listen();
+  const omp = loadBridge("feed", ipc.path);
+  await omp.fire("session_start");
+  await ipc.next(helloFor("s1"));
+
+  const thinking = { type: "thinking", thinking: "Weighing it" };
+  const call = { type: "toolCall", id: "c1", name: "read", arguments: {} };
+  // Thinking deltas carry no text, and a tool call streaming after the text
+  // leaves it unchanged: neither is worth a frame.
+  await omp.fire("message_update", assistantUpdate(1_000, thinking));
+  await omp.fire("message_update", assistantUpdate(1_000, thinking));
+  await omp.fire(
+    "message_update",
+    assistantUpdate(1_000, thinking, text("Reading")),
+  );
+  await omp.fire(
+    "message_update",
+    assistantUpdate(1_000, thinking, text("Reading"), call),
+  );
+  await omp.fire(
+    "message_update",
+    assistantUpdate(1_000, thinking, text("Reading it")),
+  );
+  // The next message is a new transcript row, never a rewrite of the last.
+  await omp.fire("message_update", assistantUpdate(2_000, text("Done")));
+  await ipc.next((s) => s.frame.t === "msg" && s.frame.text === "Done");
+
+  const sent = ipc.seen.flatMap((s) => (s.frame.t === "msg" ? [s.frame] : []));
+  expect(sent.map((m) => [m.role, m.text])).toEqual([
+    ["assistant", "Reading"],
+    ["assistant", "Reading it"],
+    ["assistant", "Done"],
+  ]);
+  const ids = sent.map((m) => m.msgId);
+  expect(ids[0]).toBe(ids[1]);
+  expect(ids[2]).not.toBe(ids[1]);
+});
+
+test("the feed echoes a prompt as the user's message once omp takes it in", async () => {
+  const ipc = await listen();
+  const omp = loadBridge("feed", ipc.path);
+  await omp.fire("session_start");
+  const hello = await ipc.next(helloFor("s1"));
+
+  ipc.conns[hello.conn]?.send({
+    t: "prompt",
+    sessionId: "s1",
+    text: "say mango",
+    mode: "steer",
+  });
+  expect(await omp.firstSent).toBe("say mango");
+  // omp streams no update for a user message: it starts and ends it when the
+  // prompt enters the conversation (a steer at the next step boundary).
+  const prompt = {
+    role: "user",
+    content: [text("say mango")],
+    timestamp: 3_000,
+  };
+  await omp.fire("message_start", { type: "message_start", message: prompt });
+  await omp.fire("message_end", { type: "message_end", message: prompt });
+  // A photo sent without words settles its row too.
+  const photo = {
+    role: "user",
+    content: [text(""), { type: "image", data: "aGk=", mimeType: "image/png" }],
+    timestamp: 4_000,
+  };
+  await omp.fire("message_start", { type: "message_start", message: photo });
+  await omp.fire("message_end", { type: "message_end", message: photo });
+  await omp.fire("message_update", assistantUpdate(5_000, text("mango")));
+  await ipc.next((s) => s.frame.t === "msg" && s.frame.text === "mango");
+
+  // The phone confirms its optimistic send by role and exact text.
+  const sent = ipc.seen.flatMap((s) => (s.frame.t === "msg" ? [s.frame] : []));
+  expect(sent.map((m) => [m.phase, m.role, m.text])).toEqual([
+    ["end", "user", "say mango"],
+    ["end", "user", ""],
+    ["update", "assistant", "mango"],
+  ]);
+  expect(new Set(sent.map((m) => m.msgId)).size).toBe(3);
 });

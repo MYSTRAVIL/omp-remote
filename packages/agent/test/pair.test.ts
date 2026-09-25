@@ -11,7 +11,7 @@ import {
 import { PairingBroker } from "../../../apps/aggregator/src/pairing";
 import { AggregatorServer } from "../../../apps/aggregator/src/server";
 import { tempMachineStore } from "../../../apps/aggregator/test/helpers/machines";
-import { performPairing } from "../src/pair";
+import { PairingTimeoutError, performPairing } from "../src/pair";
 
 const NAME_TAKEN =
   "A machine named machine-a is already on this server. If that is this machine, revoke it under Settings > Machines on this server, then pair again. Otherwise use a different --name.";
@@ -329,7 +329,7 @@ test("performPairing rejects with a timeout when the claim never lands", async (
           return clock;
         },
       }),
-    ).rejects.toThrow(/timed out/);
+    ).rejects.toBeInstanceOf(PairingTimeoutError);
 
     expect(store.peers()).toEqual([]);
   } finally {

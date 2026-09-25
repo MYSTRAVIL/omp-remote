@@ -1,10 +1,14 @@
 import { stat } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { userInfo } from "node:os";
 import { resolve } from "node:path";
 import { type Config, loadConfig, secretPaths } from "@omp-remote/config";
 import { PairingStore } from "@omp-remote/crypto";
-import { checkOwnerOnly, ipcPath, readSecret } from "@omp-remote/protocol/ipc";
+import {
+  checkOwnerOnly,
+  ipcPath,
+  readSecret,
+  windowsAccount,
+} from "@omp-remote/protocol/ipc";
 import { bridgeInstallPath } from "../service/bridge";
 
 export interface CheckResult {
@@ -55,12 +59,13 @@ async function sharedSecret(path: string): Promise<string | undefined> {
     return ((await stat(path)).mode & 0o077) === 0
       ? undefined
       : `${path} is readable by others → chmod 600 ${path}`;
-  const failure = await checkOwnerOnly(path);
+  const account = windowsAccount();
+  const failure = await checkOwnerOnly(path, undefined, account);
   if (failure === undefined) return undefined;
   const fix = "omp-remote install re-applies owner-only access";
   return failure === "acl-command-failed"
     ? `icacls cannot read the access list of ${path} → ${fix}`
-    : `${path} is open to accounts other than ${userInfo().username} → ${fix}`;
+    : `${path} is open to accounts other than ${account} → ${fix}`;
 }
 
 function pass(name: string): CheckResult {

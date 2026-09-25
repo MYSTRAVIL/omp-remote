@@ -451,6 +451,97 @@ test("a historical snapshot reconstructs a tool card with name and title", () =>
   });
 });
 
+test("a live xd:// device call is labelled by the device, not the outer write", () => {
+  const translator = new CollabTranslator("s");
+  const start = tools(
+    translator.host({
+      t: "event",
+      event: {
+        type: "tool_execution_start",
+        toolCallId: "x1",
+        toolName: "write",
+        args: {
+          path: "xd://ast_edit",
+          content: JSON.stringify({ paths: ["src/main.ts"] }),
+        },
+      },
+    }),
+  );
+  // The card names the device and summarizes the decoded args, not `{path,content}`.
+  expect(start[0]).toMatchObject({ name: "ast_edit", status: "running" });
+  expect(start[0]?.title).toContain("src/main.ts");
+  expect(start[0]?.title).not.toContain("xd://");
+  const end = tools(
+    translator.host({
+      t: "event",
+      event: {
+        type: "tool_execution_end",
+        toolCallId: "x1",
+        toolName: "write",
+        result: { content: [{ type: "text", text: "done" }] },
+      },
+    }),
+  );
+  // The argless end event keeps the device label across phases.
+  expect(end.find((f) => f.phase === "end")).toMatchObject({
+    callId: "x1",
+    name: "ast_edit",
+    status: "done",
+  });
+});
+
+test("a historical xd:// device call reconstructs under the device name", () => {
+  const translator = new CollabTranslator("s");
+  const frames = tools(
+    translator.host({
+      t: "snapshot-chunk",
+      final: true,
+      entries: [
+        {
+          type: "message",
+          id: "m2",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "x2",
+                name: "write",
+                arguments: {
+                  path: "xd://lsp",
+                  content: JSON.stringify({ query: "findRefs" }),
+                },
+              },
+            ],
+          },
+        },
+        {
+          type: "message",
+          id: "r2",
+          message: {
+            role: "toolResult",
+            toolCallId: "x2",
+            toolName: "write",
+            content: [{ type: "text", text: "3 refs" }],
+          },
+        },
+      ],
+    }),
+  );
+  expect(frames.find((f) => f.phase === "start")).toMatchObject({
+    callId: "x2",
+    name: "lsp",
+    title: "findRefs",
+  });
+  // The toolResult end frame carries the outer `write` name; it must stay `lsp`.
+  expect(frames.find((f) => f.phase === "end")).toMatchObject({
+    callId: "x2",
+    name: "lsp",
+    status: "done",
+    preview: "3 refs",
+  });
+});
+
 test("a tool result with an inline image emits media anchored to the tool call", () => {
   const translator = new CollabTranslator("sess-1");
   const png = Buffer.from([1, 2, 3, 4, 5]).toString("base64");

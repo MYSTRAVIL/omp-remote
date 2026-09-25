@@ -117,7 +117,9 @@ export async function pairPhone(
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`pairing with ${baseUrl} failed: ${reason}`);
+    throw new Error(`pairing with ${baseUrl} failed: ${reason}`, {
+      cause: err,
+    });
   }
 }
 

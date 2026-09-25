@@ -34,6 +34,8 @@ interface Stored {
   lastActiveAt: number;
   /** Encoded project directory; omp's encoding is lossy, so any name works. */
   dir?: string;
+  /** Header-only stub: skip the default message record (an empty session). */
+  empty?: boolean;
 }
 
 /** Write one session file in omp's store layout. */
@@ -64,6 +66,16 @@ function store(root: string, s: Stored): string {
     }),
   );
   lines.push(JSON.stringify({ type: "model_change", id: "m1", model: "x/y" }));
+  if (!s.empty)
+    lines.push(
+      JSON.stringify({
+        type: "message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "hi" }],
+        },
+      }),
+    );
   const file = join(
     dir,
     `${started.toISOString().replace(/[:.]/g, "-")}_${s.id}.jsonl`,
@@ -282,4 +294,27 @@ test("findStoredSession finds an id only under its own cwd", async () => {
   });
   expect(await findStoredSession("/p", B, opts)).toBeUndefined();
   expect(await findStoredSession("/p", C, opts)).toBeUndefined();
+});
+
+test("untitled header-only stubs are dropped, but titled or non-empty ones stay", async () => {
+  const root = agentDir();
+  // Untitled with a persisted message: a first prompt worth resuming — kept.
+  store(root, { id: A, cwd: "/p", lastActiveAt: 4_000 });
+  // Untitled header-only stub (no message): omp's picker hides it — dropped.
+  store(root, { id: B, cwd: "/p", lastActiveAt: 3_000, empty: true });
+  // Header-only but titled: a name is user intent worth resuming — kept.
+  store(root, {
+    id: C,
+    cwd: "/p",
+    headerTitle: "named stub",
+    lastActiveAt: 2_000,
+    empty: true,
+  });
+
+  const entries = await listStoredSessions("/p", {
+    agentDir: root,
+    exclude: new Set(),
+    platform: "linux",
+  });
+  expect(entries.map((e) => e.sessionId)).toEqual([A, C]);
 });

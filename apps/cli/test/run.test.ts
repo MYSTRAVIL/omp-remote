@@ -90,3 +90,58 @@ test("run starts server and agent from one config; the machine comes online; sto
   expect(err).toEqual([]);
   await expect(fetch(`${base}/auth/methods`)).rejects.toThrow();
 });
+
+test("run shows a fresh pairing code when one expires and keeps serving until stopped", async () => {
+  const dir = await freshState();
+  await writeFile(join(dir, "index.html"), "<!doctype html>");
+  await writeCheapPassword(secretPaths.password, PASSWORD, Date.now() - 1000);
+  // No machine token yet: run must pair a phone before the agent can start.
+  await saveConfig(
+    Config.parse({
+      version: 1,
+      machineId: "box",
+      server: { listen: { host: "127.0.0.1", port: 0 }, webRoot: dir },
+      agent: { serverUrl: "http://127.0.0.1:1" },
+    }),
+  );
+
+  const stop = Promise.withResolvers<void>();
+  const listening = Promise.withResolvers<string>();
+  const reissued = Promise.withResolvers<void>();
+  const codes: string[] = [];
+  let skew = 0;
+  const { deps, out, err } = cliDeps({
+    stopRequested: () => stop.promise,
+    now: () => Date.now() + skew,
+    // The first code's wait jumps past its lifetime; the second one's never ends.
+    sleep: async () => {
+      if (codes.length > 1) return Promise.withResolvers<void>().promise;
+      skew += 60 * 60_000;
+    },
+  });
+  const print = deps.print;
+  deps.print = (text) => {
+    print(text);
+    const url = /^\s+(http:\/\/127\.0\.0\.1:\d+)\s/.exec(text)?.[1];
+    if (url !== undefined) listening.resolve(url);
+    const code = /^Pairing code: (\S+)$/.exec(text)?.[1];
+    if (code === undefined) return;
+    codes.push(code);
+    if (codes.length === 2) reissued.resolve();
+  };
+  const running = main(["run"], deps);
+  const exited = running.then((code) => {
+    throw new Error(`run exited ${code}: ${err.join(" ")}`);
+  });
+  const base = await Promise.race([listening.promise, exited]);
+  await Promise.race([reissued.promise, exited]);
+
+  expect(codes).toHaveLength(2);
+  expect(out).toContain("The pairing code expired; here is a fresh one.");
+  expect((await fetch(`${base}/auth/methods`)).ok).toBe(true);
+
+  stop.resolve();
+  expect(await running).toBe(0);
+  expect(err).toEqual([]);
+  await expect(fetch(`${base}/auth/methods`)).rejects.toThrow();
+});

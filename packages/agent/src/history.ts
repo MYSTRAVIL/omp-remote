@@ -33,6 +33,9 @@ const SessionHeader = z.object({
   cwd: z.string(),
   title: z.string().optional(),
 });
+/** Any persisted transcript entry that is a message (user/assistant/toolResult).
+ *  Its presence in the head means the session is not a header-only stub. */
+const MessageEntry = z.object({ type: z.literal("message") });
 
 /** The comparable form of a cwd. omp's store-directory encoding is lossy, so
  *  the header `cwd` is matched instead: exactly on POSIX; on win32 without case,
@@ -79,6 +82,17 @@ async function readEntry(
     const startedAt = Date.parse(header.timestamp);
     if (Number.isNaN(startedAt)) return undefined;
     const name = title ? title.title : header.title;
+    // Match omp's resume picker (`isEmptySession`): an untitled, header-only
+    // session with no persisted message is a `newSession()`/`ensureOnDisk()`
+    // stub — drop it. A title, or any message (a first prompt worth resuming or
+    // an assistant turn), keeps it. The first message follows the header, so the
+    // head already read decides; a stub has no message anywhere.
+    if (!name) {
+      const hasMessage = lines
+        .slice(title ? 2 : 1)
+        .some((line) => parseLine(MessageEntry, line) !== undefined);
+      if (!hasMessage) return undefined;
+    }
     return {
       sessionId: header.id,
       ...(name ? { title: name } : {}),

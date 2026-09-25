@@ -9,3 +9,4 @@ export * from "./notify";
 export * from "./queue";
 export * from "./scheduler";
 export * from "./sealed-wire";
+export * from "./xdev";

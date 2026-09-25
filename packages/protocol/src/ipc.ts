@@ -40,6 +40,7 @@ export {
   resolveIpcToken,
   restrictToOwner,
   stateDir,
+  windowsAccount,
 } from "./ipc-secrets";
 
 type Env = Record<string, string | undefined>;

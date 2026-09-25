@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ipcTokenPath,
@@ -13,6 +13,7 @@ import {
   checkOwnerOnly,
   ownerOnlyAclArgv,
   restrictToOwner,
+  windowsAccount,
 } from "../src/ipc-secrets";
 
 const dirs: string[] = [];
@@ -79,7 +80,6 @@ test("the IPC token is the per-install file; a stale OMP_REMOTE_TOKEN no longer 
 });
 
 const FILE = "C:\\Users\\me\\.omp-remote\\ipc-token";
-
 test("the owner-only ACL argv drops inheritance and grants only the user", () => {
   expect(ownerOnlyAclArgv(FILE, "me")).toEqual([
     "icacls",
@@ -88,6 +88,17 @@ test("the owner-only ACL argv drops inheritance and grants only the user", () =>
     "/grant:r",
     "me:F",
   ]);
+});
+
+test("the icacls grantee is the domain-qualified account, so a user named like the machine still gets the ACE", () => {
+  // User `Chef` on machine `CHEF`: a bare `Chef:F` grants `CHEF\`, nobody.
+  const account = windowsAccount({ USERDOMAIN: "CHEF" }, "Chef");
+  expect(account).toBe("CHEF\\Chef");
+  expect(ownerOnlyAclArgv(FILE, account).at(-1)).toBe("CHEF\\Chef:F");
+  expect(windowsAccount({ USERDOMAIN: "CORP" }, "CORP\\chef")).toBe(
+    "CORP\\chef",
+  );
+  expect(windowsAccount({}, "chef")).toBe("chef");
 });
 
 /** A fake `icacls`: answers the grant, then the read-back listing. */
@@ -114,6 +125,16 @@ test("restrictToOwner verifies the ACL names only the current user", async () =>
   const fake = icacls(ok, listed("DESKTOP-1\\me:(F)"));
   expect(await restrictToOwner(FILE, fake.run, "me")).toBeUndefined();
   expect(fake.calls).toEqual([ownerOnlyAclArgv(FILE, "me"), ["icacls", FILE]]);
+});
+
+test("the ACL check accepts the qualified owner and rejects the empty machine principal", async () => {
+  const owner = "CHEF\\Chef";
+  const granted = icacls(ok, listed("CHEF\\Chef:(F)"));
+  expect(await checkOwnerOnly(FILE, granted.run, owner)).toBeUndefined();
+  const nobody = icacls(ok, listed("CHEF\\:(F)"));
+  expect(await checkOwnerOnly(FILE, nobody.run, owner)).toBe(
+    "acl-not-owner-only",
+  );
 });
 
 test("restrictToOwner reports, never throws, when icacls fails or leaves others", async () => {
@@ -170,7 +191,7 @@ test.skipIf(process.platform !== "win32")(
     const failures: string[] = [];
     await loadOrCreateSecret(path, { onAclFailure: (f) => failures.push(f) });
     expect(failures).toEqual([]);
-    // Read the ACL back independently: one ACE, for the current user.
+    // Read the ACL back independently: one ACE, for the current account.
     const listing = Bun.spawnSync(["icacls", path]).stdout.toString();
     const aces = listing
       .slice(path.length)
@@ -178,8 +199,8 @@ test.skipIf(process.platform !== "win32")(
       .map((line) => line.trim());
     const granted = aces.slice(0, aces.indexOf(""));
     expect(granted).toHaveLength(1);
-    expect(granted[0]?.toLowerCase()).toContain(
-      `\\${userInfo().username.toLowerCase()}:`,
+    expect(granted[0]?.toLowerCase()).toStartWith(
+      `${windowsAccount().toLowerCase()}:(`,
     );
   },
 );

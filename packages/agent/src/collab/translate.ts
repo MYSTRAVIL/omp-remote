@@ -28,6 +28,7 @@ import {
   MAX_RESOURCE_BYTES,
   base64ByteLength,
   chunkBase64,
+  parseXdevWrite,
 } from "@omp-remote/protocol";
 import type {
   CollabAgentEvent,
@@ -208,6 +209,9 @@ export class CollabTranslator {
   #contextWindow?: number;
   readonly #toolTitles = new Map<string, string>();
   readonly #toolFiles = new Map<string, string>();
+  /** callId → xd:// device name, so a device call's card is labelled by the
+   *  device (not the outer `write`) across its start and end frames. */
+  readonly #toolDevices = new Map<string, string>();
   #cwd = "";
 
   constructor(sessionId: string) {
@@ -343,10 +347,12 @@ export class CollabTranslator {
         const callId = message.toolCallId ?? entry.id ?? `t${++this.#seq}`;
         const title = this.#toolTitles.get(callId) ?? "";
         this.#toolTitles.delete(callId);
+        const device = this.#toolDevices.get(callId);
+        this.#toolDevices.delete(callId);
         return [
           this.#tool(
             callId,
-            message.toolName ?? "",
+            device ?? message.toolName ?? "",
             "end",
             message.isError ? "error" : "done",
             extractText(message.content),
@@ -359,18 +365,14 @@ export class CollabTranslator {
         for (const block of message.content) {
           if (block.type !== "toolCall" || !block.id) continue;
           if (block.name === "ask") continue; // surfaces via interaction instead
-          const detail = argSummary(block.arguments);
+          const xdev = parseXdevWrite(block.name, block.arguments);
+          const name = xdev ? xdev.device : (block.name ?? "");
+          if (xdev) this.#toolDevices.set(block.id, xdev.device);
+          const detail = argSummary(xdev ? xdev.content : block.arguments);
           const title = oneLine(block.intent ?? "") || detail;
           this.#toolTitles.set(block.id, title);
           out.push(
-            this.#tool(
-              block.id,
-              block.name ?? "",
-              "start",
-              "running",
-              detail,
-              title,
-            ),
+            this.#tool(block.id, name, "start", "running", detail, title),
           );
         }
       }
@@ -472,36 +474,47 @@ export class CollabTranslator {
   ): UplinkFrame[] {
     if (!event.toolCallId) return [];
     if (event.toolName === "ask") return []; // surfaces via interactionFrame instead
-    let title = this.#toolTitles.get(event.toolCallId);
+    const callId = event.toolCallId;
+    let title = this.#toolTitles.get(callId);
+    let device = this.#toolDevices.get(callId);
+    let startPreview = "";
     if (phase === "start") {
-      title = oneLine(event.intent ?? "") || argSummary(event.args);
-      if (title) this.#toolTitles.set(event.toolCallId, title);
-      const file = filePathFromArgs(event.args);
-      if (file) this.#toolFiles.set(event.toolCallId, file);
+      // An `xd://` device call surfaces only as the outer `write`; label the
+      // card by the device and summarize its decoded args, not `{path,content}`.
+      const xdev = parseXdevWrite(event.toolName, event.args);
+      if (xdev) {
+        device = xdev.device;
+        this.#toolDevices.set(callId, device);
+      }
+      startPreview = argSummary(xdev ? xdev.content : event.args);
+      title = oneLine(event.intent ?? "") || startPreview;
+      if (title) this.#toolTitles.set(callId, title);
+      if (!xdev) {
+        const file = filePathFromArgs(event.args);
+        if (file) this.#toolFiles.set(callId, file);
+      }
     }
     const previewText =
       phase === "end"
         ? resultText(event.result)
         : phase === "update"
           ? resultText(event.partialResult)
-          : argSummary(event.args);
+          : startPreview;
     const frame = this.#tool(
-      event.toolCallId,
-      event.toolName ?? "",
+      callId,
+      device ?? event.toolName ?? "",
       phase,
       status,
       previewText,
       title ?? "",
     );
     if (phase === "end") {
-      this.#toolTitles.delete(event.toolCallId);
-      const sourcePath = this.#toolFiles.get(event.toolCallId);
-      this.#toolFiles.delete(event.toolCallId);
+      this.#toolTitles.delete(callId);
+      this.#toolDevices.delete(callId);
+      const sourcePath = this.#toolFiles.get(callId);
+      this.#toolFiles.delete(callId);
       const result = event.result as { content?: unknown } | undefined;
-      return [
-        frame,
-        ...this.#mediaFrames(event.toolCallId, result?.content, sourcePath),
-      ];
+      return [frame, ...this.#mediaFrames(callId, result?.content, sourcePath)];
     }
     return [frame];
   }

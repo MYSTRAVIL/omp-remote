@@ -90,6 +90,24 @@ All notable changes to omp-remote are documented here. The format follows
   crashes the host-agent or the OMP session.
 - Model, effort and compact controls and image uploads work over the hosted
   path.
+- Prompts sent from the phone settle into the transcript instead of staying
+  "steering in…" or "queued…" forever on a session the bridge feeds directly
+  (no Collab room). The bridge now sends each user message once omp takes it
+  in, so prompts typed at the desk show on the phone too (#2).
+- A reasoning model no longer floods the phone with an empty message frame per
+  thinking step on a bridge-fed session, and each reply keeps its own
+  transcript row instead of overwriting the previous one (#3).
+- omp subagents (the sessions the `task` tool spawns) no longer show up on the
+  phone as extra "Unreachable" sessions. The bridge still loads into them but
+  does not announce them; they stay part of their parent's run.
+- `omp-remote init` no longer fails with `EFAULT` on Windows when the username
+  equals the computer name. Secret files are granted to `DOMAIN\user`, not the
+  bare name, which `icacls` read as the machine and turned into an empty
+  `CHEF\` principal that locked the owner out. `doctor` and `install` check and
+  name the same account (#1).
+- `omp-remote run` no longer exits when nobody enters the pairing code in time.
+  It shows a fresh code and QR and keeps the server running. `omp-remote pair`
+  still exits non-zero on a timeout (#5).
 
 ### Security
 

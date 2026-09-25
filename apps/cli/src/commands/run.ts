@@ -2,6 +2,10 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { type RunningAgent, startAgent } from "@omp-remote/agent/src/main";
 import {
+  type PairingResult,
+  PairingTimeoutError,
+} from "@omp-remote/agent/src/pair";
+import {
   DEFAULT_WEB_ROOT,
   type RunningServer,
   startServer,
@@ -10,6 +14,7 @@ import { configPath, loadConfig } from "@omp-remote/config";
 import type { CliDeps } from "../deps";
 import { type PhoneUrl, phoneUrls } from "../urls";
 import {
+  type PairTarget,
   agentServerUrl,
   needsPairing,
   pairPhone,
@@ -61,10 +66,32 @@ async function ensureWebApp(
 }
 
 /**
+ * Pair a phone for `run`, with a fresh code each time one expires: the
+ * server keeps serving meanwhile, so a missed code never ends the process.
+ * `undefined` when a stop is requested first.
+ */
+async function pairWhileRunning(
+  target: PairTarget,
+  deps: CliDeps,
+  stopRequested: Promise<void>,
+): Promise<PairingResult | undefined> {
+  const stopped = stopRequested.then(() => undefined);
+  for (;;) {
+    try {
+      return await Promise.race([pairPhone(target, deps), stopped]);
+    } catch (err) {
+      if (!(err instanceof Error && err.cause instanceof PairingTimeoutError))
+        throw err;
+      deps.print("The pairing code expired; here is a fresh one.");
+    }
+  }
+}
+
+/**
  * `omp-remote run`: run this machine's server and/or agent in the foreground
  * until SIGINT/SIGTERM. The agent of a machine that also runs the server dials
  * it over loopback. An agent with no machine token or no paired phone pairs
- * one first.
+ * one first, showing a fresh code whenever one expires.
  */
 export async function run(args: string[], deps: CliDeps): Promise<number> {
   parseArgs({ args, options: {}, strict: true, allowPositionals: false });
@@ -95,7 +122,7 @@ export async function run(args: string[], deps: CliDeps): Promise<number> {
       let cfg = { ...loaded, agent: loaded.agent };
       const serverUrl = agentServerUrl(cfg, server?.port);
       if (await needsPairing(cfg)) {
-        const pairing = pairPhone(
+        const paired = await pairWhileRunning(
           {
             machineId: cfg.machineId,
             serverUrl,
@@ -103,11 +130,8 @@ export async function run(args: string[], deps: CliDeps): Promise<number> {
             renew: true,
           },
           deps,
+          stopRequested,
         );
-        const paired = await Promise.race([
-          pairing,
-          stopRequested.then(() => undefined),
-        ]);
         if (paired === undefined) {
           await stop();
           return 0;

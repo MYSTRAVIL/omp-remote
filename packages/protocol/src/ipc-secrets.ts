@@ -18,6 +18,23 @@ export function ipcTokenPath(env: Env = process.env): string {
   return join(stateDir(env), "ipc-token");
 }
 
+/**
+ * The current Windows account as `icacls` must name it: `DOMAIN\user`, the
+ * domain from `USERDOMAIN` (the computer name for a local account). A bare
+ * name is ambiguous: when it equals the computer name, `icacls` resolves it
+ * to the machine and grants `CHEF\` — no account at all — which locks the
+ * owner out of the file. Bare only when `USERDOMAIN` is unset.
+ */
+export function windowsAccount(
+  env: Env = process.env,
+  username: string = userInfo().username,
+): string {
+  const domain = env.USERDOMAIN;
+  return domain && !username.includes("\\")
+    ? `${domain}\\${username}`
+    : username;
+}
+
 /** The secret the loopback dev client must offer. */
 export function devClientSecretPath(env: Env = process.env): string {
   return join(stateDir(env), "dev-client-secret");
@@ -98,7 +115,7 @@ function aclPrincipals(listing: string, file: string): string[] {
 export async function checkOwnerOnly(
   file: string,
   run: RunCommand = runCommand,
-  user: string = userInfo().username,
+  user: string = windowsAccount(),
 ): Promise<SecretAclFailure | undefined> {
   try {
     const listing = await run(["icacls", file]);
@@ -125,7 +142,7 @@ export async function checkOwnerOnly(
 export async function restrictToOwner(
   file: string,
   run: RunCommand = runCommand,
-  user: string = userInfo().username,
+  user: string = windowsAccount(),
 ): Promise<SecretAclFailure | undefined> {
   try {
     if ((await run(ownerOnlyAclArgv(file, user))).code !== 0)
