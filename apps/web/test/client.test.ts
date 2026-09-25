@@ -252,3 +252,34 @@ test("a new away time goes to its machine at once when its channel is ready, els
     { t: "notifyPolicy", awaySec: 0 },
   ]);
 });
+
+test("a historyRequest goes sealed to its machine, and the sealed history answer reaches store subscribers", async () => {
+  const { phone, agent } = await pair();
+  const store = new AppStore();
+  const sock = new FakeSocket();
+  const client = new PhoneClient(
+    () => sock,
+    [{ machineId: "m1", keys: phone }],
+    store,
+  );
+  client.start();
+  sock.fireOpen();
+  const m1 = new FakeAgent(agent, "m1");
+  m1.connect(sock);
+  m1.relay();
+
+  client.channelFor("m1")?.sendFrame({ t: "historyRequest", cwd: "C:\\p" });
+  m1.relay();
+  expect(m1.frames).toContainEqual({ t: "historyRequest", cwd: "C:\\p" });
+
+  const seen: (readonly unknown[] | undefined)[] = [];
+  store.subscribe(() => seen.push(store.historyFor("m1", "C:\\p")));
+  const entry = {
+    sessionId: "0f1e2d3c-4b5a",
+    title: "Refactor",
+    startedAt: 10,
+    lastActiveAt: 20,
+  };
+  sock.deliver(m1.seal({ t: "history", cwd: "C:\\p", entries: [entry] }));
+  expect(seen).toEqual([[entry]]);
+});

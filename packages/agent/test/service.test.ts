@@ -1,9 +1,11 @@
 import { afterEach, expect, setSystemTime, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   ClientMessage,
   Frame,
+  HistoryFrame,
   InteractionFrame,
   InteractionReplyFrame,
   MediaChunkFrame,
@@ -18,15 +20,38 @@ import { CollabHostFrameSchema } from "../src/collab/schema";
 import { CollabTranslator } from "../src/collab/translate";
 import type { AgentDiagnostic } from "../src/diagnostics";
 import { AgentService } from "../src/service";
-import { type TerminalCommand, spawnSession } from "../src/spawn";
+import {
+  type SpawnOptions,
+  type TerminalCommand,
+  spawnSession,
+} from "../src/spawn";
 import { devClientSocket, testDevClient } from "./helpers/dev-client";
 
 let svc: AgentService | undefined;
+const roots: string[] = [];
 afterEach(async () => {
   await svc?.stop();
   svc = undefined;
   setSystemTime();
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true });
 });
+
+/** A temp omp agent dir whose session store holds `sessions`. */
+function sessionStore(sessions: { id: string; cwd: string }[]): string {
+  const root = mkdtempSync(join(tmpdir(), "omp-remote-store-"));
+  roots.push(root);
+  const dir = join(root, "sessions", "-proj");
+  mkdirSync(dir, { recursive: true });
+  for (const { id, cwd } of sessions)
+    writeFileSync(
+      join(dir, `2026-01-01T00-00-00-000Z_${id}.jsonl`),
+      `${JSON.stringify({ type: "title", v: 1, title: `title ${id}`, pad: "  " })}\n${JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd })}\n`,
+    );
+  return root;
+}
+const STORED_A = "aaaaaaaa-0000-4000-8000-000000000001";
+const STORED_B = "bbbbbbbb-0000-4000-8000-000000000002";
 
 function ipcAddr() {
   return process.platform === "win32"
@@ -487,6 +512,133 @@ test("a spawn frame carrying a command injection is reported failed and starts n
     code: "spawn-failed",
   });
   expect(launched).toEqual([]);
+});
+
+test("a historyRequest is answered with the cwd's stored sessions, minus the running ones", async () => {
+  const path = ipcAddr();
+  const agentDir = sessionStore([
+    { id: STORED_A, cwd: "/x/p" },
+    { id: STORED_B, cwd: "/x/p" },
+    { id: "cccccccc-0000-4000-8000-000000000003", cwd: "/elsewhere" },
+  ]);
+  svc = new AgentService({ token: "tok", ipcPath: path, agentDir });
+  await svc.start();
+  // STORED_B is running now: its bridge is registered.
+  const listed = Promise.withResolvers<void>();
+  const history = Promise.withResolvers<HistoryFrame>();
+  svc.subscribe((m) => {
+    if (m.t === "sessions" && m.sessions.some((s) => s.id === STORED_B))
+      listed.resolve();
+    if (m.t === "history") history.resolve(m);
+  });
+  const session = await connectIpc(path, "tok");
+  session.send({
+    t: "hello",
+    token: "tok",
+    session: { ...meta, id: STORED_B },
+  });
+  await listed.promise;
+
+  svc.deliverDownlink({ t: "historyRequest", cwd: "/x/p" });
+
+  const answer = await history.promise;
+  expect(answer.cwd).toBe("/x/p");
+  expect(answer.entries.map((e) => [e.sessionId, e.title])).toEqual([
+    [STORED_A, `title ${STORED_A}`],
+  ]);
+  session.close();
+});
+
+test("a history listing that fails answers with no entries and a diagnostic", async () => {
+  const root = mkdtempSync(join(tmpdir(), "omp-remote-store-"));
+  roots.push(root);
+  // `sessions` is a file, so the store cannot be listed.
+  writeFileSync(join(root, "sessions"), "");
+  const failed = Promise.withResolvers<AgentDiagnostic>();
+  svc = new AgentService({
+    token: "tok",
+    ipcPath: ipcAddr(),
+    agentDir: root,
+    diagnostic: (event) => {
+      if (event.event === "history_failed") failed.resolve(event);
+    },
+  });
+  await svc.start();
+  const history = Promise.withResolvers<HistoryFrame>();
+  svc.subscribe((m) => {
+    if (m.t === "history") history.resolve(m);
+  });
+
+  svc.deliverDownlink({ t: "historyRequest", cwd: "C:\\x\\p" });
+
+  expect(await history.promise).toEqual({
+    t: "history",
+    cwd: "C:\\x\\p",
+    entries: [],
+  });
+  expect(await failed.promise).toEqual({
+    event: "history_failed",
+    code: "list-failed",
+  });
+});
+
+test("a resume spawn launches only a session the store holds for that cwd", async () => {
+  const agentDir = sessionStore([
+    { id: STORED_A, cwd: "/x/p" },
+    { id: STORED_B, cwd: "/other" },
+  ]);
+  const calls: SpawnOptions[] = [];
+  const outcomes: AgentDiagnostic[] = [];
+  const settled = Promise.withResolvers<void>();
+  svc = new AgentService({
+    token: "tok",
+    ipcPath: ipcAddr(),
+    agentDir,
+    spawn: (opts) => {
+      calls.push(opts);
+      return { pid: 1, kill: () => {} };
+    },
+    diagnostic: (event) => {
+      if (event.event !== "session_spawned") return;
+      outcomes.push(event);
+      if (outcomes.length === 3) settled.resolve();
+    },
+  });
+  await svc.start();
+  const spawn = {
+    t: "spawn",
+    machineId: "m1",
+    cwd: "/x/p",
+    approvalMode: "write",
+  } as const;
+
+  // Another project's session, and an id the store never held: refused.
+  svc.deliverDownlink({ ...spawn, spawnId: "n1", resume: STORED_B });
+  svc.deliverDownlink({
+    ...spawn,
+    spawnId: "n2",
+    resume: "dddddddd-0000-4000-8000-000000000004",
+  });
+  svc.deliverDownlink({
+    ...spawn,
+    spawnId: "n3",
+    model: "opus",
+    resume: STORED_A,
+  });
+  await settled.promise;
+
+  expect(calls.map((c) => [c.spawnId, c.resume])).toEqual([["n3", STORED_A]]);
+  const refused: AgentDiagnostic = {
+    event: "session_spawned",
+    machineId: "m1",
+    outcome: "failed",
+    code: "resume-not-found",
+  };
+  expect(
+    outcomes.filter(
+      (e) => e.event === "session_spawned" && e.outcome === "failed",
+    ),
+  ).toEqual([refused, refused]);
 });
 
 test("prompt control registered before Collab stays out of the session feed", async () => {

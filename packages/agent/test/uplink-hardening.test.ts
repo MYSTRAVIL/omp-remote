@@ -764,6 +764,7 @@ const commands: {
   resourceAbort: { t: "resourceAbort", sessionId: "s1", transferId: "x1" },
   mediaFetch: { t: "mediaFetch", sessionId: "s1", mediaId: "s1:0" },
   notifyPolicy: { t: "notifyPolicy", awaySec: 300 },
+  historyRequest: { t: "historyRequest", cwd: "/tmp/project" },
 };
 
 /** Open an uplink on a fake socket, with the paired phone bound to it. */

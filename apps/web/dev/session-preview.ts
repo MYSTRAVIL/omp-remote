@@ -98,6 +98,15 @@ const transcript: TranscriptState = {
       text: "Refactor the bridge and show me some markdown, please.",
       streaming: false,
     },
+    ...["read", "grep", "read", "edit"].map((name, i) => ({
+      kind: "tool" as const,
+      callId: `g${i}`,
+      name,
+      status: "ok",
+      preview: "done",
+      title: `apps/web/src/ui/file-${i}.ts`,
+      done: true,
+    })),
     {
       kind: "message",
       msgId: "a1",

@@ -99,6 +99,9 @@ export type AgentDiagnostic =
       outcome: "launched" | "failed";
       code?: string;
     }
+  /** omp's session store could not be listed for a phone's history request;
+   *  the phone was answered with no entries. */
+  | { event: "history_failed"; code: "list-failed" }
   | { event: "uplink_started" | "uplink_stopped"; machineId: string }
   | {
       event: "uplink_connected";
@@ -243,6 +246,7 @@ function levelOf(event: AgentDiagnostic): DiagnosticLevel {
     case "log_rotation_failed":
     case "notify_push_failed":
     case "notify_policy_failed":
+    case "history_failed":
       return "warn";
     case "control_outcome":
       return event.outcome === "rejected" ? "warn" : "info";
@@ -333,6 +337,11 @@ export function formatAgentDiagnostic(
       };
       return JSON.stringify(record);
     }
+    case "history_failed":
+      return JSON.stringify({
+        ...base(event.event, "host.client", level, now),
+        code: event.code,
+      });
     case "uplink_started":
     case "uplink_stopped":
       return JSON.stringify({

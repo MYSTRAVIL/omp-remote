@@ -171,6 +171,9 @@ const WHILE_DOWN: Record<ClientMessage["t"], "replayed" | "held"> = {
   mediaError: "held",
   // A Collab `bye` leaves the session listed until its adapter stops.
   bye: "held",
+  // An answer to one phone request: no replay rebuilds it, and dropping it
+  // would leave the phone waiting, so it follows the reconnect's replay once.
+  history: "held",
   // The host consumes bridge hellos and never relays one; held if one ever is.
   hello: "held",
 };

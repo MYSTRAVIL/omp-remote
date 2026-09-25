@@ -296,3 +296,64 @@ test("a host that cannot close the session says so in the conversation", () => {
     "This omp session cannot be ended from the phone.",
   );
 });
+
+test("an ended session offers Continue, which asks to reopen it and says when it cannot", async () => {
+  const asked: string[] = [];
+  const answer = Promise.withResolvers<boolean>();
+  const { handlers: base } = recordingHandlers();
+  const handlers: ControlHandlers = {
+    ...base,
+    onContinue: (sessionId) => {
+      asked.push(sessionId);
+      return answer.promise;
+    },
+  };
+  const view = new SessionView(
+    META,
+    handlers,
+    new ComposerPreferences(),
+    new ChatPreferences(),
+  );
+  views.push(view);
+  document.body.append(view.node);
+  const transcript = emptyTranscript();
+  const draw = (): void =>
+    view.update(META, transcript, handlers, [], { models: [], roles: [] });
+  const button = (): HTMLButtonElement => {
+    const found =
+      view.node.querySelector<HTMLButtonElement>(".composer-continue");
+    if (!found) throw new Error("no Continue button");
+    return found;
+  };
+  draw();
+  // A live session has nothing to continue.
+  expect(button().hidden).toBe(true);
+  reduceTranscript(transcript, { t: "bye", sessionId: "s1" });
+  draw();
+  expect(button().hidden).toBe(false);
+  button().click();
+  // One tap sends once, even when tapped again while it is on its way.
+  button().click();
+  expect(asked).toEqual(["s1"]);
+  expect(button().disabled).toBe(true);
+  answer.resolve(false);
+  await answer.promise;
+  expect(button().disabled).toBe(false);
+  expect(view.node.querySelector(".composer-error")?.textContent).toContain(
+    "Couldn't reach this session's machine",
+  );
+  // An unreachable session is still running: there is nothing to continue.
+  view.update({ ...META, reachable: false }, emptyTranscript(), handlers, [], {
+    models: [],
+    roles: [],
+  });
+  expect(button().hidden).toBe(true);
+});
+
+test("without a host to answer, an ended session offers no Continue", () => {
+  const { draw, view } = mount();
+  draw({ t: "bye", sessionId: "s1" });
+  expect(
+    view.node.querySelector<HTMLButtonElement>(".composer-continue")?.hidden,
+  ).toBe(true);
+});

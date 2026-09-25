@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import {
   ApprovalMode,
+  type HistoryEntry,
   type SessionMeta,
   SpawnThinkingLevel,
 } from "@omp-remote/protocol";
@@ -15,6 +16,8 @@ import {
   LaunchPreferences,
 } from "../core/launch-preferences";
 import type { MachineNode } from "../core/session-tree";
+import type { SpawnOptions } from "../core/spawn-frame";
+import { timeAgo } from "../core/time-format";
 import { AboutSettings } from "./about-settings";
 import { AccountSettings } from "./account-settings";
 import { AppearanceSettings } from "./appearance-settings";
@@ -326,6 +329,31 @@ export class WorkspaceDialogs {
     "plus",
   );
   readonly #spawnStatus = element("p", "spawn-status");
+  /** Past sessions: its toggle, and the panel listing the chosen project's stored sessions. */
+  readonly #pastToggle = button(
+    "Past sessions",
+    "button secondary spawn-past-toggle",
+  );
+  readonly #pastPanel = element("div", "spawn-past");
+  readonly #pastStatus = element("p", "field-hint spawn-past-status");
+  readonly #pastList = element("ul", "settings-machines spawn-past-list");
+  /** The project Past sessions is open for, and whether the ask reached its machine. */
+  #past: { machineId: string; cwd: string; sent: boolean } | undefined;
+  /** The answer the list was drawn from, to skip identical redraws. */
+  #drawnPast: readonly HistoryEntry[] | undefined;
+  /** The stored session Start reopens instead of starting a new one. */
+  #resume:
+    | {
+        machineId: string;
+        cwd: string;
+        sessionId: string;
+        title: string;
+        ago: string;
+      }
+    | undefined;
+  readonly #resumeNote = element("div", "spawn-resume");
+  readonly #resumeCopy = element("p", "section-copy");
+  readonly #resumeCancel = button("Start new instead", "button secondary");
   readonly #pairForm = element("form", "pair-form");
   readonly #pairCode = element("input", "pair-code");
   readonly #pairButton = button("Pair machine", "button primary pair");
@@ -565,6 +593,9 @@ export class WorkspaceDialogs {
     // session, the form then takes that session's directory and model;
     // otherwise each machine's default project.
     this.#modelDrafts.clear();
+    // Past sessions starts closed, and Start starts a new session.
+    this.#past = undefined;
+    this.#resume = undefined;
     this.#model.value = this.#launchPreferences.defaultModel(
       this.#selectedMachineId,
     );
@@ -734,6 +765,7 @@ export class WorkspaceDialogs {
     this.#cwd.required = chosen === "";
     const cwd = draft?.cwd ?? "";
     if (this.#cwd.value !== cwd) this.#cwd.value = cwd;
+    this.#syncPast();
   }
 
   #managedRow(): ManagedProjectRow {
@@ -795,6 +827,113 @@ export class WorkspaceDialogs {
     setText(this.#manageProjects, on ? "Done" : "Manage");
     this.#manageProjects.setAttribute("aria-expanded", String(on));
     this.#managedList.hidden = !on;
+  }
+
+  /** Where Start runs: the chosen remembered project, else the typed directory. */
+  #chosenCwd(): string {
+    const draft = this.#directoryDrafts.get(this.#selectedMachineId);
+    return draft ? draft.projectCwd || draft.cwd.trim() : "";
+  }
+
+  /** Open Past sessions for the chosen project, asking its machine afresh; or close it. */
+  #togglePast(): void {
+    const history = this.#handlers.history;
+    const cwd = this.#chosenCwd();
+    if (this.#spawning || !history) return;
+    if (this.#past !== undefined || !cwd) {
+      this.#past = undefined;
+    } else {
+      const machineId = this.#selectedMachineId;
+      this.#past = { machineId, cwd, sent: history.request(machineId, cwd) };
+    }
+    this.#drawnPast = undefined;
+    this.#syncPast();
+  }
+
+  /**
+   * Draw Past sessions and resume for the chosen machine and project. Either
+   * one belongs to the project it was opened for, so choosing another closes
+   * the list and leaves resume. Resume hides the model (omp restores the
+   * stored session's own) and turns Start into Resume.
+   */
+  #syncPast(): void {
+    const history = this.#handlers.history;
+    const machineId = this.#selectedMachineId;
+    const cwd = this.#chosenCwd();
+    const moved = (at: { machineId: string; cwd: string } | undefined) =>
+      at !== undefined && (at.machineId !== machineId || at.cwd !== cwd);
+    if (moved(this.#past)) this.#past = undefined;
+    if (moved(this.#resume)) this.#resume = undefined;
+
+    const chosen = this.#chosenMachine();
+    this.#pastToggle.hidden = history === undefined;
+    this.#pastToggle.disabled =
+      !cwd || chosen === undefined || chosen.offline === true;
+    const resume = this.#resume;
+    this.#modelGroup.hidden = resume !== undefined;
+    this.#resumeNote.hidden = resume === undefined;
+    if (resume)
+      setText(
+        this.#resumeCopy,
+        `Resumes “${resume.title}”, last active ${resume.ago}. It keeps its own model.`,
+      );
+    const label = this.#spawnButton.querySelector<HTMLElement>(".button-label");
+    if (label)
+      setText(label, resume === undefined ? "Start session" : "Resume session");
+
+    const past = this.#past;
+    this.#pastToggle.setAttribute("aria-expanded", String(past !== undefined));
+    this.#pastPanel.hidden = past === undefined;
+    if (past === undefined || history === undefined) return;
+    const entries = past.sent
+      ? history.entries(past.machineId, past.cwd)
+      : undefined;
+    this.#pastPanel.setAttribute(
+      "aria-busy",
+      String(past.sent && entries === undefined),
+    );
+    setText(
+      this.#pastStatus,
+      !past.sent
+        ? "Couldn't reach this machine. Check the connection, then try again."
+        : entries === undefined
+          ? "Loading past sessions…"
+          : entries.length === 0
+            ? "No past sessions in this project."
+            : "",
+    );
+    this.#pastStatus.hidden = this.#pastStatus.textContent === "";
+    // A list still loading is empty, never the last project's.
+    if (entries !== undefined && entries === this.#drawnPast) return;
+    this.#drawnPast = entries;
+    const now = Date.now();
+    const rows = (entries ?? []).map((entry) => {
+      // Untitled: the id's first characters name it.
+      const title = entry.title?.trim() || entry.sessionId.slice(0, 8);
+      const ago = timeAgo(entry.lastActiveAt, now);
+      const row = button(title, "button model-picker-option spawn-past-entry");
+      row.append(element("span", "model-picker-option-detail", ago));
+      row.setAttribute("aria-label", `${title}, last active ${ago}`);
+      row.addEventListener("click", () => {
+        if (this.#spawning) return;
+        this.#resume = {
+          machineId: past.machineId,
+          cwd: past.cwd,
+          sessionId: entry.sessionId,
+          title,
+          ago,
+        };
+        this.#past = undefined;
+        this.#syncPast();
+        // Approval mode is the one choice still to confirm.
+        this.#spawnApproval.select.focus();
+      });
+      const item = element("li", "spawn-past-item");
+      item.append(row);
+      return item;
+    });
+    this.#pastList.replaceChildren(...rows);
+    this.#pastList.hidden = rows.length === 0;
   }
 
   /**
@@ -859,6 +998,7 @@ export class WorkspaceDialogs {
     this.#modelGroup.disabled = this.#spawning;
     this.#spawnEffort.select.disabled = this.#spawning;
     this.#spawnApproval.select.disabled = this.#spawning;
+    this.#resumeCancel.disabled = this.#spawning;
     // The relay drops a spawn for a machine it does not list.
     this.#spawnButton.disabled =
       this.#spawning || chosen === undefined || chosen.offline === true;
@@ -1288,11 +1428,30 @@ export class WorkspaceDialogs {
     this.#cwd.addEventListener("input", () => {
       const draft = this.#directoryDrafts.get(this.#selectedMachineId);
       if (!this.#spawning && draft) draft.cwd = this.#cwd.value;
+      this.#syncPast();
     });
+    // Past sessions sits under the directory: the chosen project's stored
+    // sessions, each one a tap from resuming it.
+    this.#pastPanel.id = uniqueId("past-sessions");
+    this.#pastToggle.setAttribute("aria-controls", this.#pastPanel.id);
+    this.#pastToggle.title = "Resume a stored session of this project";
+    this.#pastToggle.addEventListener("click", () => this.#togglePast());
+    this.#pastStatus.setAttribute("role", "status");
+    this.#pastList.setAttribute("aria-label", "Past sessions");
+    this.#pastPanel.append(this.#pastStatus, this.#pastList);
+    this.#resumeCancel.addEventListener("click", () => {
+      this.#resume = undefined;
+      this.#syncPast();
+      this.#pastToggle.focus();
+    });
+    this.#resumeCopy.setAttribute("aria-live", "polite");
+    this.#resumeNote.append(this.#resumeCopy, this.#resumeCancel);
     this.#projectGroup.append(
       this.#spawnProject.node,
       this.#managedList,
       this.#cwdField,
+      this.#pastToggle,
+      this.#pastPanel,
     );
 
     const modelHead = element("div", "spawn-group-head");
@@ -1328,6 +1487,7 @@ export class WorkspaceDialogs {
       ),
       this.#spawnMachine.node,
       this.#projectGroup,
+      this.#resumeNote,
       this.#modelGroup,
       this.#spawnEffort.node,
       this.#spawnApproval.node,
@@ -1372,7 +1532,7 @@ export class WorkspaceDialogs {
   async #start(): Promise<void> {
     const machineId = this.#selectedMachineId;
     const draft = this.#directoryDrafts.get(machineId);
-    const cwd = draft ? draft.projectCwd || draft.cwd.trim() : "";
+    const cwd = this.#chosenCwd();
     const chosen = this.#chosenMachine();
     if (
       this.#spawning ||
@@ -1381,21 +1541,29 @@ export class WorkspaceDialogs {
       chosen.offline === true
     )
       return;
-    const model = this.#model.value.trim() || undefined;
     const approvalMode = this.#spawnApproval.value ?? "always-ask";
     const thinkingLevel = this.#spawnEffort.value || undefined;
+    const resume = this.#resume?.sessionId;
+    // A resume sends no model: omp restores the stored session's own.
+    const opts: SpawnOptions =
+      resume === undefined
+        ? {
+            cwd,
+            model: this.#model.value.trim() || undefined,
+            thinkingLevel,
+            approvalMode,
+          }
+        : { cwd, thinkingLevel, approvalMode, resume };
     const spawn = this.#handlers.onSpawn;
     this.#spawning = true;
     this.#syncSpawnControls();
     this.spawn.body.setAttribute("aria-busy", "true");
-    this.#spawnStatus.textContent = "Starting… A passkey check may be needed.";
+    this.#spawnStatus.textContent =
+      resume === undefined
+        ? "Starting… A passkey check may be needed."
+        : "Resuming… A passkey check may be needed.";
     try {
-      const sent = await spawn(machineId, {
-        cwd,
-        model,
-        thinkingLevel,
-        approvalMode,
-      });
+      const sent = await spawn(machineId, opts);
       if (sent) {
         this.#launchPreferences.rememberProject(machineId, cwd);
         // A custom directory is a remembered project now: offer it as one.
@@ -1408,6 +1576,7 @@ export class WorkspaceDialogs {
           draft.projectCwd = cwd;
           draft.cwd = "";
         }
+        this.#resume = undefined;
         this.#renderProjects();
         this.#spawnStatus.textContent = "";
         this.spawn.node.close();

@@ -5,6 +5,7 @@ import {
   DEV_CLIENT_PROTOCOL,
   type DownlinkCommand,
   DownlinkFrame,
+  type HistoryRequestFrame,
   type InteractionEndFrame,
   type InteractionFrame,
   type MediaChunkFrame,
@@ -21,6 +22,7 @@ import {
 import { type IpcConn, IpcServer } from "@omp-remote/protocol/ipc";
 import type { Server, ServerWebSocket } from "bun";
 import { type AgentDiagnosticSink, noAgentDiagnostic } from "./diagnostics";
+import { findStoredSession, listStoredSessions } from "./history";
 import { NotifyPolicy } from "./notify-policy";
 import { Registry } from "./registry";
 import { type SpawnHandle, type SpawnOptions, spawnSession } from "./spawn";
@@ -79,6 +81,9 @@ export interface AgentConfig {
   /** Where a phone's `notifyPolicy` is kept (the uplink's notifier reads it);
    *  defaults to one held in memory only. */
   notifyPolicy?: NotifyPolicy;
+  /** omp's agent directory, whose session store answers a `historyRequest`
+   *  and vouches for a resume spawn; defaults to omp's own. Tests pass one. */
+  agentDir?: string;
 }
 
 /** Compare a presented credential in constant time (lengths are not secret). */
@@ -463,9 +468,10 @@ export class AgentService {
    * connection; Collab remains authoritative for interrupt and interaction
    * replies. A Collab session without prompt control reports a visible error
    * instead of silently collapsing Queue into Steer. A `mediaFetch` is answered
-   * here, from the retained media, and a `notifyPolicy` is kept (and saved) for
-   * the notifier. The switch is exhaustive: a new `DownlinkFrame` variant fails
-   * to compile until it is routed here.
+   * here, from the retained media, a `historyRequest` from omp's session store,
+   * and a `notifyPolicy` is kept (and saved) for the notifier. The switch is
+   * exhaustive: a new `DownlinkFrame` variant fails to compile until it is
+   * routed here.
    */
   deliverDownlink(frame: DownlinkCommand): void {
     switch (frame.t) {
@@ -498,6 +504,9 @@ export class AgentService {
       case "mediaFetch":
         this.#fetchMedia(frame);
         return;
+      case "historyRequest":
+        this.#deliverHistory(frame);
+        return;
       case "notifyPolicy":
         // Where the user is told, never what a session does: no session, no
         // control outcome. Saving never rejects; a failure is reported.
@@ -510,29 +519,51 @@ export class AgentService {
 
   #deliverSpawn(frame: Extract<DownlinkCommand, { t: "spawn" }>): void {
     const { machineId } = frame;
-    // Sync throws and async launch errors both land in the rejection branch;
-    // a failed spawn is logged, never allowed to take the host-agent down.
-    void (async () =>
-      this.#spawn({
+    // Sync throws and async launch errors both land in the catch; a failed
+    // spawn is logged, never allowed to take the host-agent down.
+    void (async (): Promise<string | undefined> => {
+      // A resume reopens only a session the store holds for this very cwd.
+      if (frame.resume !== undefined) {
+        const stored = await findStoredSession(frame.cwd, frame.resume, {
+          agentDir: this.#cfg.agentDir,
+        });
+        if (!stored) return "resume-not-found";
+      }
+      await this.#spawn({
         cwd: frame.cwd,
         model: frame.model,
         thinkingLevel: frame.thinkingLevel,
         approvalMode: frame.approvalMode,
         spawnId: frame.spawnId,
-      }))().then(
-      () =>
-        this.#diagnostic({
-          event: "session_spawned",
-          machineId,
-          outcome: "launched",
-        }),
-      () =>
-        this.#diagnostic({
-          event: "session_spawned",
-          machineId,
-          outcome: "failed",
-          code: "spawn-failed",
-        }),
+        resume: frame.resume,
+      });
+      return undefined;
+    })()
+      .catch(() => "spawn-failed")
+      .then((code) =>
+        this.#diagnostic(
+          code === undefined
+            ? { event: "session_spawned", machineId, outcome: "launched" }
+            : { event: "session_spawned", machineId, outcome: "failed", code },
+        ),
+      );
+  }
+
+  /** Answer a `historyRequest` with the cwd's stored sessions, leaving out every
+   *  session running now. Never rejects: a failed listing answers empty so the
+   *  phone stops waiting, and is reported. */
+  #deliverHistory({ cwd }: HistoryRequestFrame): void {
+    const running = new Set(this.#promptControlMeta.keys());
+    for (const { meta } of this.#registry.list()) running.add(meta.id);
+    void listStoredSessions(cwd, {
+      agentDir: this.#cfg.agentDir,
+      exclude: running,
+    }).then(
+      (entries) => this.#emit({ t: "history", cwd, entries }),
+      () => {
+        this.#diagnostic({ event: "history_failed", code: "list-failed" });
+        this.#emit({ t: "history", cwd, entries: [] });
+      },
     );
   }
 

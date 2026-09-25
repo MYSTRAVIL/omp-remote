@@ -641,6 +641,88 @@ test("failSpawn stops resolution even once the session appears; clearSpawn drops
   expect(store.pendingSpawn()).toBeUndefined();
 });
 
+test("a resume spawn also resolves to the resumed session's own id on its machine", () => {
+  const store = new AppStore();
+  store.setMachineList(["m1", "m2"]);
+  store.beginSpawn({
+    machineId: "m1",
+    cwd: "/x/p",
+    spawnId: "n1",
+    resume: "0badc0de-0000",
+  });
+  expect(store.pendingSpawn()?.resume).toBe("0badc0de-0000");
+  // The same id on another machine is not the session this phone resumed.
+  store.applyFrame("m2", sessions([meta({ id: "0badc0de-0000" })]));
+  expect(store.resolveSpawn()).toBeUndefined();
+  // omp keeps the stored id on resume, even where no nonce is echoed.
+  store.applyFrame("m1", sessions([meta({ id: "0badc0de-0000" })]));
+  expect(store.resolveSpawn()).toBe("0badc0de-0000");
+});
+
+test("a history answer is held per machine and project; clearing one leaves the others", () => {
+  const store = new AppStore();
+  let emits = 0;
+  store.subscribe(() => {
+    emits += 1;
+  });
+  const entry = { sessionId: "abcdef01", startedAt: 1, lastActiveAt: 2 };
+  expect(store.historyFor("m1", "/x/p")).toBeUndefined();
+  store.applyFrame("m1", { t: "history", cwd: "/x/p", entries: [entry] });
+  store.applyFrame("m1", { t: "history", cwd: "/x/q", entries: [] });
+  expect(emits).toBe(2);
+  expect(store.historyFor("m1", "/x/p")).toEqual([entry]);
+  expect(store.historyFor("m1", "/x/q")).toEqual([]);
+  // Another machine's project of the same path is its own.
+  expect(store.historyFor("m2", "/x/p")).toBeUndefined();
+  // Asking again drops the old answer, so the list shows loading until the new one.
+  store.clearHistory("m1", "/x/p");
+  expect(store.historyFor("m1", "/x/p")).toBeUndefined();
+  expect(store.historyFor("m1", "/x/q")).toEqual([]);
+  store.forgetMachine("m1");
+  expect(store.historyFor("m1", "/x/q")).toBeUndefined();
+});
+
+test("an ended session stays open after the host stops listing it, and comes back live when resumed", () => {
+  const store = new AppStore();
+  store.setMachineList(["m1"]);
+  const ended = meta({ id: "s1", pid: 10, cwd: "/x/p" });
+  store.applyFrame("m1", sessions([ended]));
+  store.select("s1");
+  store.applyFrame("m1", {
+    t: "msg",
+    sessionId: "s1",
+    msgId: "u1",
+    phase: "end",
+    role: "user",
+    text: "hi",
+  });
+  store.applyFrame("m1", { t: "bye", sessionId: "s1" });
+  store.applyFrame("m1", sessions([]));
+  // The tab stays on the ended session, and Continue knows where it ran.
+  expect(store.selectedSession()?.id).toBe("s1");
+  expect(store.endedSession("s1")).toEqual({ machineId: "m1", meta: ended });
+  expect(store.transcriptFor("s1")?.ended).toBe(true);
+  // A stale listing of the same process does not revive it.
+  store.applyFrame("m1", sessions([ended]));
+  expect(store.transcriptFor("s1")?.ended).toBe(true);
+  // The resumed process (same id, new pid) is live again, its history kept.
+  store.applyFrame("m1", sessions([{ ...ended, pid: 11 }]));
+  expect(store.transcriptFor("s1")?.ended).toBe(false);
+  expect(store.transcriptFor("s1")?.entries).toHaveLength(1);
+  expect(store.endedSession("s1")).toBeUndefined();
+});
+
+test("a session never selected still revives when resumed from Past sessions", () => {
+  const store = new AppStore();
+  store.setMachineList(["m1"]);
+  store.applyFrame("m1", sessions([meta({ id: "s1", pid: 10 })]));
+  store.applyFrame("m1", { t: "bye", sessionId: "s1" });
+  store.applyFrame("m1", sessions([]));
+  expect(store.selectedSession()).toBeUndefined();
+  store.applyFrame("m1", sessions([meta({ id: "s1", pid: 12 })]));
+  expect(store.transcriptFor("s1")?.ended).toBe(false);
+});
+
 function catalog(
   sessionId: string,
   over: Partial<ModelCatalogFrame> = {},

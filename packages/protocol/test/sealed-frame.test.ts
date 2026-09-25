@@ -5,6 +5,7 @@ import {
   ClientMessage,
   ControlFrame,
   DownlinkFrame,
+  HistoryFrame,
   SealedFrame,
   SessionsFrame,
   SpawnFrame,
@@ -16,10 +17,34 @@ test("no frame tag is shared across directions, so isDownlinkFrame is sound", ()
   const tags = (u: typeof UplinkFrame | typeof DownlinkFrame): string[] =>
     u.options.map((o) => o.shape.t.value);
   const down = tags(DownlinkFrame);
-  const agentToPhone = [SessionsFrame.shape.t.value, ...tags(UplinkFrame)];
+  const agentToPhone = [
+    SessionsFrame.shape.t.value,
+    HistoryFrame.shape.t.value,
+    ...tags(UplinkFrame),
+  ];
   expect(agentToPhone.filter((t) => down.includes(t))).toEqual([]);
   expect(isDownlinkFrame({ t: "sync" })).toBe(true);
   expect(isDownlinkFrame({ t: "sessions", sessions: [] })).toBe(false);
+  expect(isDownlinkFrame({ t: "history", cwd: "/x", entries: [] })).toBe(false);
+  expect(isDownlinkFrame({ t: "historyRequest", cwd: "/x" })).toBe(true);
+});
+
+test("a resume id admits only a session-store id, since it reaches a command line", () => {
+  const spawn = {
+    t: "spawn",
+    machineId: "m1",
+    cwd: "/x/p",
+    approvalMode: "write",
+    spawnId: "n1",
+  };
+  expect(
+    SpawnFrame.safeParse({
+      ...spawn,
+      resume: "01a0d1e9-4d45-73ae-88a8-9cebec95ea51",
+    }).success,
+  ).toBe(true);
+  for (const resume of ["", "abc", "01a0d1e9 & calc", "../../etc", "-rf"])
+    expect(SpawnFrame.safeParse({ ...spawn, resume }).success).toBe(false);
 });
 
 test("the sealed channel contract carries snapshots, uplink, and downlink frames", () => {

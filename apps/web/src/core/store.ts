@@ -1,6 +1,7 @@
 import type {
   CatalogModel,
   CatalogRole,
+  HistoryEntry,
   InteractionFrame,
   SealedFrame,
   SessionMeta,
@@ -35,6 +36,8 @@ export interface PendingSpawn {
   cwd: string;
   project: string;
   spawnId: string;
+  /** The stored session this spawn reopens; omp keeps its id on resume. */
+  resume?: string;
   status: "waiting" | "failed";
 }
 
@@ -112,6 +115,15 @@ export class AppStore {
   #pendingSpawn: PendingSpawn | undefined;
   /** Names given to machines on this device (`MachineLabels`), by machineId. */
   #labels: ReadonlyMap<string, string> = new Map();
+  /** Each machine's last answer to Past sessions, by project cwd (memory only). */
+  readonly #history = new Map<string, Map<string, readonly HistoryEntry[]>>();
+  /**
+   * Sessions that said `bye` this load, with the machine and meta they had.
+   * The host stops listing them at once; this keeps an ended session's tab
+   * open (with Continue) while it stays selected, and tells a resumed session
+   * (same id, new process) from a stale listing of the ended one.
+   */
+  readonly #ended = new Map<string, { machineId: string; meta: SessionMeta }>();
 
   /** Last-known catalog per machine, for the new-session dialog. */
   readonly #machineCatalogs: MachineCatalogs | undefined;
@@ -240,6 +252,12 @@ export class AppStore {
     // catalog and a last-seen time.
     this.#machineCatalogs?.forget(machineId);
     this.#presence?.forget(machineId);
+    this.#history.delete(machineId);
+    for (const [sessionId, gone] of this.#ended)
+      if (gone.machineId === machineId) {
+        this.#ended.delete(sessionId);
+        this.#transcripts.delete(sessionId);
+      }
     const machine = this.#machines.get(machineId);
     if (machine === undefined) return;
     this.#machines.delete(machineId);
@@ -261,7 +279,8 @@ export class AppStore {
    * `interaction` queues a decision and `interactionEnd` (only from the owning
    * machine) dismisses one; `msg`/`tool`/`state`/`jobs`/`controlError`/`bye`
    * build the owning session's transcript, and a `bye` retires that session's
-   * attention + pending. Everything else is ignored.
+   * attention + pending. A `history` answer is held per machine and project
+   * for Past sessions. Everything else is ignored.
    */
   applyFrame(machineId: string, frame: SealedFrame): void {
     this.#presence?.observe([machineId], this.#now());
@@ -277,12 +296,32 @@ export class AppStore {
       // The sender's snapshot is authoritative for its own sessions only: retire
       // what it owns but no longer lists, leaving other machines' state intact.
       const listed = new Set(frame.sessions.map((s) => s.id));
+      // A resumed session comes back under its old id in a new process: its
+      // transcript is live again. Entry ids are omp's own, so the replay
+      // lands on the kept entries instead of doubling them.
+      for (const session of frame.sessions) {
+        const gone = this.#ended.get(session.id);
+        if (gone === undefined || gone.meta.pid === session.pid) continue;
+        this.#ended.delete(session.id);
+        const transcript = this.#transcripts.get(session.id);
+        if (transcript) transcript.ended = false;
+      }
       this.#retire(
         (owner, sessionId) => owner === machineId && !listed.has(sessionId),
       );
       this.#stale.delete(machineId);
       this.#live = true;
       this.#saveList();
+      this.#emit();
+      return;
+    }
+    if (frame.t === "history") {
+      let projects = this.#history.get(machineId);
+      if (projects === undefined) {
+        projects = new Map();
+        this.#history.set(machineId, projects);
+      }
+      projects.set(frame.cwd, frame.entries);
       this.#emit();
       return;
     }
@@ -364,6 +403,10 @@ export class AppStore {
         this.#attention.delete(frame.sessionId);
         this.#pendingInteractions.delete(frame.sessionId);
         this.#catalogs.delete(frame.sessionId);
+        const meta = this.#machines
+          .get(machineId)
+          ?.sessions.find((s) => s.id === frame.sessionId);
+        if (meta) this.#ended.set(frame.sessionId, { machineId, meta });
       }
       // The tree shows the live title; keep the cached list in step with it.
       if (current.footer?.title !== title) this.#saveList();
@@ -380,8 +423,14 @@ export class AppStore {
   }
 
   /** Record a phone-initiated spawn and show its waiting screen until the host
-   *  reports a session carrying the matching `spawnId`. */
-  beginSpawn(input: { machineId: string; cwd: string; spawnId: string }): void {
+   *  reports a session carrying the matching `spawnId` (or, resuming, the
+   *  stored session's own id). */
+  beginSpawn(input: {
+    machineId: string;
+    cwd: string;
+    spawnId: string;
+    resume?: string;
+  }): void {
     // The project label is the cwd's last path segment (either separator).
     const project =
       input.cwd
@@ -393,6 +442,7 @@ export class AppStore {
       cwd: input.cwd,
       project,
       spawnId: input.spawnId,
+      ...(input.resume === undefined ? {} : { resume: input.resume }),
       status: "waiting",
     };
     this.#emit();
@@ -404,13 +454,19 @@ export class AppStore {
   }
 
   /** The id of the session that fulfils the pending spawn (its `spawnId`
-   *  matches), or undefined while none has registered yet. */
+   *  matches, or it is the resumed session on the spawn's machine), or
+   *  undefined while none has registered yet. */
   resolveSpawn(): string | undefined {
     const pending = this.#pendingSpawn;
     if (!pending || pending.status !== "waiting") return undefined;
     for (const machine of this.#machines.values())
       for (const session of machine.sessions)
-        if (session.spawnId === pending.spawnId) return session.id;
+        if (
+          session.spawnId === pending.spawnId ||
+          (session.id === pending.resume &&
+            machine.machineId === pending.machineId)
+        )
+          return session.id;
     return undefined;
   }
 
@@ -430,6 +486,20 @@ export class AppStore {
     }
   }
 
+  /** A machine's last answer to Past sessions for `cwd`; undefined until one lands. */
+  historyFor(
+    machineId: string,
+    cwd: string,
+  ): readonly HistoryEntry[] | undefined {
+    return this.#history.get(machineId)?.get(cwd);
+  }
+
+  /** Drop the held answer for `cwd` before asking again, so Past sessions shows
+   *  loading until the fresh one lands rather than a stale list. */
+  clearHistory(machineId: string, cwd: string): void {
+    if (this.#history.get(machineId)?.delete(cwd)) this.#emit();
+  }
+
   /** Whether the session needs the user: the host flagged it (spec §5) or a
    *  pending interaction is waiting on an answer. Pending survives `select`. */
   needsAttention(sessionId: string): boolean {
@@ -438,7 +508,8 @@ export class AppStore {
     );
   }
 
-  /** The selected session's metadata, or undefined if none/unknown. */
+  /** The selected session's metadata, or undefined if none/unknown. An ended
+   *  session stays selected (its tab open) after the host stops listing it. */
   selectedSession(): SessionMeta | undefined {
     const id = this.#state.selectedSessionId;
     if (id === undefined) return undefined;
@@ -446,7 +517,16 @@ export class AppStore {
       const found = m.sessions.find((s) => s.id === id);
       if (found) return found;
     }
-    return undefined;
+    return this.#ended.get(id)?.meta;
+  }
+
+  /** A session that ended this load and is no longer listed: the machine it
+   *  ran on and its last meta, for Continue. */
+  endedSession(
+    sessionId: string,
+  ): { machineId: string; meta: SessionMeta } | undefined {
+    if (this.machineIdForSession(sessionId) !== undefined) return undefined;
+    return this.#ended.get(sessionId);
   }
 
   /** The machineId owning the selected session (for routing control frames). */

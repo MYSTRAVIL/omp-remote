@@ -11,6 +11,7 @@ import type {
   ApprovalMode,
   CatalogModel,
   CatalogRole,
+  HistoryEntry,
   SessionMeta,
   SpawnThinkingLevel,
 } from "@omp-remote/protocol";
@@ -49,6 +50,7 @@ interface Spawned {
   model?: string;
   thinkingLevel?: SpawnThinkingLevel;
   approvalMode: ApprovalMode;
+  resume?: string;
 }
 
 function session(id: string, cwd: string, model = "host/model"): SessionMeta {
@@ -544,4 +546,136 @@ test("hiding the default project in New session clears it in Settings", () => {
 
   settings = openSettings(root);
   expect(selectLabelled(settings, "desk").value).toBe("");
+});
+
+/** A host answering Past sessions: requests are recorded, answers set by the test. */
+function pastSessions() {
+  const requests: { machineId: string; cwd: string }[] = [];
+  const answers = new Map<string, HistoryEntry[]>();
+  const history: NonNullable<ControlHandlers["history"]> = {
+    request: (machineId, cwd) => {
+      requests.push({ machineId, cwd });
+      answers.delete(`${machineId} ${cwd}`);
+      return true;
+    },
+    entries: (machineId, cwd) => answers.get(`${machineId} ${cwd}`),
+  };
+  const answer = (machineId: string, cwd: string, entries: HistoryEntry[]) =>
+    answers.set(`${machineId} ${cwd}`, entries);
+  return { history, requests, answer };
+}
+
+function statusText(scope: ParentNode): string[] {
+  return [...scope.querySelectorAll<HTMLElement>("[role=status]")]
+    .filter(visible)
+    .map((node) => node.textContent ?? "")
+    .filter((text) => text !== "");
+}
+
+test("Past sessions asks the chosen machine about the chosen project, loads, then lists or says there are none", () => {
+  const past = pastSessions();
+  const { root, draw } = workspace({ history: past.history });
+  const spawn = openSpawn(root);
+  choose(spawn, "Machine", "desk");
+  choose(spawn, "Project", "/p/beta");
+  const toggle = buttonNamed(spawn, "Past sessions");
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  toggle.click();
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(past.requests).toEqual([{ machineId: "desk", cwd: "/p/beta" }]);
+  expect(statusText(spawn)).toContain("Loading past sessions…");
+
+  const now = Date.now();
+  past.answer("desk", "/p/beta", [
+    {
+      sessionId: "0f1e2d3c-4b5a",
+      title: "Fix login",
+      startedAt: now - 7_200_000,
+      lastActiveAt: now - 3_600_000,
+    },
+    { sessionId: "abcdef0123456789", startedAt: 0, lastActiveAt: 0 },
+  ]);
+  draw();
+  expect(statusText(spawn)).not.toContain("Loading past sessions…");
+  expect(buttonStarting(spawn, "Fix login").textContent).toContain(
+    "1 hour ago",
+  );
+  // Untitled: the id's first characters name it.
+  buttonStarting(spawn, "abcdef01");
+
+  // Another project is asked about afresh; this one has none.
+  choose(spawn, "Project", "/p/alpha");
+  buttonNamed(spawn, "Past sessions").click();
+  expect(past.requests.at(-1)).toEqual({ machineId: "desk", cwd: "/p/alpha" });
+  past.answer("desk", "/p/alpha", []);
+  draw();
+  expect(statusText(spawn)).toContain("No past sessions in this project.");
+});
+
+test("resuming a past session hides the model, keeps the saved approval mode, and sends resume without a model", () => {
+  const past = pastSessions();
+  const { root, history, draw, spawned } = workspace({
+    history: past.history,
+  });
+  const settings = openSettings(root);
+  select(selectLabelled(settings, "Default approval mode"), "write");
+  buttonNamed(settings, "Close settings").click();
+  history.flush();
+
+  const spawn = openSpawn(root);
+  choose(spawn, "Machine", "desk");
+  choose(spawn, "Project", "/p/beta");
+  buttonNamed(spawn, "Past sessions").click();
+  past.answer("desk", "/p/beta", [
+    {
+      sessionId: "0f1e2d3c-4b5a",
+      title: "Fix login",
+      startedAt: 1,
+      lastActiveAt: 2,
+    },
+  ]);
+  draw();
+  buttonStarting(spawn, "Fix login").click();
+
+  expect(visible(group(spawn, "Model (optional)"))).toBe(false);
+  expect(chosen(spawn, "Approval mode")).toBe("Write mode");
+  choose(spawn, "Effort", "High");
+  buttonNamed(spawn, "Resume session").click();
+  expect(spawned).toEqual([
+    {
+      machineId: "desk",
+      cwd: "/p/beta",
+      thinkingLevel: "high",
+      approvalMode: "write",
+      resume: "0f1e2d3c-4b5a",
+    },
+  ]);
+  expect("model" in (spawned[0] ?? {})).toBe(false);
+});
+
+test("choosing another project, or Start new instead, leaves resume and brings the model back", () => {
+  const past = pastSessions();
+  const { root, draw, spawned } = workspace({ history: past.history });
+  const spawn = openSpawn(root);
+  choose(spawn, "Machine", "desk");
+  choose(spawn, "Project", "/p/beta");
+  buttonNamed(spawn, "Past sessions").click();
+  past.answer("desk", "/p/beta", [
+    { sessionId: "0f1e2d3c-4b5a", startedAt: 1, lastActiveAt: 2 },
+  ]);
+  draw();
+  buttonStarting(spawn, "0f1e2d3c").click();
+  buttonNamed(spawn, "Start new instead").click();
+  expect(visible(group(spawn, "Model (optional)"))).toBe(true);
+
+  buttonNamed(spawn, "Past sessions").click();
+  past.answer("desk", "/p/beta", [
+    { sessionId: "0f1e2d3c-4b5a", startedAt: 1, lastActiveAt: 2 },
+  ]);
+  draw();
+  buttonStarting(spawn, "0f1e2d3c").click();
+  choose(spawn, "Project", "/p/alpha");
+  buttonNamed(spawn, "Start session").click();
+  expect(spawned.at(-1)?.resume).toBeUndefined();
+  expect(spawned.at(-1)?.cwd).toBe("/p/alpha");
 });

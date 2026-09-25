@@ -69,6 +69,22 @@ interface ComposerAttachment {
   fill: HTMLElement;
 }
 
+/** A run of tool calls folded under one line, such as "17 tool calls". */
+interface GroupView {
+  node: HTMLDetailsElement;
+  count: HTMLElement;
+  /** The run's latest call, so a closed group still shows progress. */
+  latest: HTMLElement;
+  body: HTMLElement;
+}
+
+/** A drawn entry, in transcript order, before runs of tool calls are grouped. */
+interface DrawnEntry {
+  key: string;
+  entry: TranscriptEntry;
+  node: HTMLElement;
+}
+
 /** Render a message's downlink images from their self-contained `data:` URLs —
  *  local only, never a network fetch, so this stays clear of the markdown
  *  img-strip. An image still on its way (or still on the host, deferred) shows
@@ -114,6 +130,16 @@ export function renderMedia(
 class TranscriptView {
   readonly node = element("div", "transcript");
   readonly #entries = new Map<string, EntryView>();
+  /** Tool-call groups, keyed by their first entry's key. */
+  readonly #groups = new Map<string, GroupView>();
+  /** The last drawn transcript, so a grouping change can redraw it at once. */
+  #last:
+    | {
+        entries: readonly TranscriptEntry[];
+        ended: boolean;
+        unreachable: boolean;
+      }
+    | undefined;
   readonly #empty = element("div", "transcript-empty");
   readonly #onOverlay: ControlHandlers["onOverlay"];
   /** Asks the host for a deferred image's bytes; see `onMediaFetch`. */
@@ -142,7 +168,8 @@ class TranscriptView {
 
   /**
    * Bring what is drawn in line with the chat preferences: text size, message
-   * times, and every card the reader has not opened or closed themselves.
+   * times, tool-call groups, and every card the reader has not opened or
+   * closed themselves.
    */
   applyPreferences(): void {
     const size = this.#chat.textSize;
@@ -152,6 +179,8 @@ class TranscriptView {
       this.#placeTime(view);
       this.#disclose(view);
     }
+    if (this.#last)
+      this.update(this.#last.entries, this.#last.ended, this.#last.unreachable);
   }
 
   /** A card opens as the chat preferences say (a tool card also for its
@@ -240,7 +269,8 @@ class TranscriptView {
     ended: boolean,
     unreachable: boolean,
   ): void {
-    const nodes: HTMLElement[] = [];
+    this.#last = { entries, ended, unreachable };
+    const drawn: DrawnEntry[] = [];
     const keys = new Set<string>();
     for (const entry of entries) {
       const key =
@@ -325,11 +355,12 @@ class TranscriptView {
       // `onMediaFetch` claims one transfer at a time (see `claimMediaFetch`).
       for (const m of entry.media ?? [])
         if (m.status === "deferred") this.#onDeferred(m.mediaId);
-      nodes.push(view.node);
+      drawn.push({ key, entry, node: view.node });
     }
     for (const key of this.#entries.keys()) {
       if (!keys.has(key)) this.#entries.delete(key);
     }
+    const nodes = this.#group(drawn);
     if (nodes.length === 0) {
       const title = this.#empty.querySelector<HTMLElement>(".empty-title");
       const copy = this.#empty.querySelector<HTMLElement>(".empty-copy");
@@ -355,10 +386,77 @@ class TranscriptView {
     }
     syncChildren(this.node, nodes);
   }
+
+  /**
+   * Fold each run of tool calls, with any thinking between them, that holds
+   * at least the preferred number of calls under one group line. Any other
+   * message ends a run; the calls after it start a new one.
+   */
+  #group(drawn: readonly DrawnEntry[]): HTMLElement[] {
+    const min = this.#chat.toolGroupMin;
+    const nodes: HTMLElement[] = [];
+    const live = new Set<string>();
+    let run: DrawnEntry[] = [];
+    const flush = (): void => {
+      const tools = run.flatMap((d) =>
+        d.entry.kind === "tool" ? [d.entry] : [],
+      );
+      const first = run[0];
+      const last = tools.at(-1);
+      if (min > 0 && tools.length >= min && first && last) {
+        live.add(first.key);
+        let group = this.#groups.get(first.key);
+        if (!group) {
+          group = this.#createGroup();
+          this.#groups.set(first.key, group);
+        }
+        setText(group.count, `${tools.length} tool calls`);
+        setText(
+          group.latest,
+          last.title ? `${last.name} ${last.title}` : last.name,
+        );
+        group.node.classList.toggle(
+          "done",
+          tools.every((tool) => tool.done),
+        );
+        syncChildren(
+          group.body,
+          run.map((d) => d.node),
+        );
+        nodes.push(group.node);
+      } else for (const d of run) nodes.push(d.node);
+      run = [];
+    };
+    for (const d of drawn) {
+      if (d.entry.kind === "tool" || d.entry.role === "thinking") run.push(d);
+      else {
+        flush();
+        nodes.push(d.node);
+      }
+    }
+    flush();
+    for (const key of this.#groups.keys())
+      if (!live.has(key)) this.#groups.delete(key);
+    return nodes;
+  }
+
+  /** A closed group line; it opens only when the reader asks. */
+  #createGroup(): GroupView {
+    const node = element("details", "tool-group");
+    const summary = element("summary", "tool-summary");
+    const count = element("span", "tool-name");
+    const latest = element("span", "tool-detail");
+    summary.append(icon("terminal"), count, latest, icon("chevron"));
+    const body = element("div", "tool-group-body");
+    node.append(summary, body);
+    return { node, count, latest, body };
+  }
 }
 
 const ENDED_NOTICE =
   "This session has ended. Start a new session to continue; your draft stays here until you close this tab.";
+const CONTINUABLE_NOTICE =
+  "This session has ended. Continue reopens it on its machine; your draft stays here until you close this tab.";
 const UNREACHABLE_NOTICE =
   "Not reachable. Restart this omp session to reconnect; your draft stays here until you close this tab.";
 
@@ -372,6 +470,12 @@ class Composer {
   readonly #interrupt = button("Interrupt", "button interrupt", "stop");
   readonly #aside = button("Aside", "button composer-aside");
   readonly #ended = element("p", "composer-ended", ENDED_NOTICE);
+  /** Reopens an ended session (`omp --resume`); shown only once it has ended. */
+  readonly #continue = button(
+    "Continue session",
+    "button primary composer-continue",
+  );
+  #continuing = false;
   readonly #pendingNotice = element(
     "p",
     "composer-pending-notice",
@@ -450,6 +554,19 @@ class Composer {
     this.#status.setAttribute("role", "status");
     this.#offlineNotice.setAttribute("role", "status");
     this.#ended.hidden = true;
+    this.#continue.type = "button";
+    this.#continue.hidden = true;
+    this.#continue.addEventListener("click", () => {
+      const onContinue = this.handlers.onContinue;
+      if (!onContinue || this.#continuing) return;
+      this.#continuing = true;
+      this.#continue.disabled = true;
+      setText(this.#status, "");
+      void onContinue(sessionId).then(
+        (sent) => this.#continued(sent),
+        () => this.#continued(false),
+      );
+    });
     this.#menu.id = uniqueId("composer-menu");
     this.#menu.setAttribute("role", "group");
     this.#menu.setAttribute("aria-label", "Message actions");
@@ -532,6 +649,7 @@ class Composer {
       this.#fileInput,
       controlRow,
       this.#ended,
+      this.#continue,
       this.#pendingNotice,
       this.#status,
       this.#menu,
@@ -642,8 +760,18 @@ class Composer {
     // A locked session says so on its own; reconnecting would not change that.
     this.#refusal = locked ? undefined : refusal;
     this.input.disabled = locked || this.#pendingBlocked;
-    setText(this.#ended, unreachable ? UNREACHABLE_NOTICE : ENDED_NOTICE);
+    const continuable =
+      ended && !unreachable && handlers.onContinue !== undefined;
+    setText(
+      this.#ended,
+      unreachable
+        ? UNREACHABLE_NOTICE
+        : continuable
+          ? CONTINUABLE_NOTICE
+          : ENDED_NOTICE,
+    );
     this.#ended.hidden = !locked;
+    this.#continue.hidden = !continuable;
     setText(this.#offlineNotice, this.#refusal ?? "");
     this.node.classList.toggle("pending-blocked", this.#pendingBlocked);
     this.#pendingNotice.hidden = !this.#pendingBlocked;
@@ -651,6 +779,17 @@ class Composer {
     if ((locked || !active || this.#refusal !== undefined) && this.#menuOpen)
       this.#closeMenu(false);
     this.#updateButtons();
+  }
+
+  /** A Continue that could not be sent: say so and offer it again. */
+  #continued(sent: boolean): void {
+    this.#continuing = false;
+    this.#continue.disabled = false;
+    if (!sent)
+      setText(
+        this.#status,
+        "Couldn't reach this session's machine. Check the connection, then try again.",
+      );
   }
 
   setCatalog(catalog: SessionCatalog): void {

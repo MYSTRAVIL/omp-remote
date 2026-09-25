@@ -1,11 +1,18 @@
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
-import type { ApprovalMode, SpawnThinkingLevel } from "@omp-remote/protocol";
+import {
+  type ApprovalMode,
+  type SpawnThinkingLevel,
+  StoredSessionId,
+} from "@omp-remote/protocol";
 
 export interface SpawnOptions {
   cwd: string;
   model?: string;
+  /** A stored session of `cwd` to reopen (`omp --resume <id>`); omp restores
+   *  that session's own model, so `model` is ignored then. */
+  resume?: string;
   /** omp `--thinking` for the spawned session (thinking effort). */
   thinkingLevel?: SpawnThinkingLevel;
   /** omp `--approval-mode` for the spawned session (spec §8 v1). */
@@ -77,13 +84,23 @@ const CONHOST = win32.join(
 
 /**
  * The omp CLI flags for a spawn (pure — the testable core of the argv). Throws
- * when the model is not a {@link MODEL_ID}, before any command line exists.
+ * when the model is not a {@link MODEL_ID} or the resume id is not a
+ * `StoredSessionId`, before any command line exists. A resume drops the model.
  */
 export function spawnArgs(
-  opts: Pick<SpawnOptions, "model" | "approvalMode" | "thinkingLevel">,
+  opts: Pick<
+    SpawnOptions,
+    "model" | "approvalMode" | "thinkingLevel" | "resume"
+  >,
 ): string[] {
   const args: string[] = [];
-  if (opts.model) {
+  if (opts.resume !== undefined) {
+    if (!StoredSessionId.safeParse(opts.resume).success)
+      throw new Error(
+        `spawn: resume ${JSON.stringify(opts.resume)} is not a stored session id`,
+      );
+    args.push("--resume", opts.resume);
+  } else if (opts.model) {
     if (!MODEL_ID.test(opts.model))
       throw new Error(
         `spawn: model ${JSON.stringify(opts.model)} is not a valid omp model id`,

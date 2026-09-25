@@ -1,10 +1,9 @@
 /// <reference lib="dom" />
 import type {
-  ApprovalMode,
+  HistoryEntry,
   InteractionFrame,
   InteractionResponse,
   SessionMeta,
-  SpawnThinkingLevel,
 } from "@omp-remote/protocol";
 import type { OrbState } from "thinking-orbs/engine";
 import type { AppearancePreferences } from "../core/appearance-preferences";
@@ -24,6 +23,7 @@ import type { OverlayEntry } from "../core/history-nav";
 import type { PushEnrolment } from "../core/push-subscribe";
 import type { MachineNode } from "../core/session-tree";
 import type { SignInPreferences } from "../core/sign-in-preferences";
+import type { SpawnOptions } from "../core/spawn-frame";
 import type { PendingSpawn } from "../core/store";
 import type { SessionCatalog } from "../core/store";
 import type { TranscriptState } from "../core/transcript";
@@ -112,15 +112,27 @@ export interface ControlHandlers extends TreeHandlers {
    * calls send nothing. Undefined where no host can answer (the dev previews).
    */
   onMediaFetch?(sessionId: string, mediaId: string): void;
-  onSpawn(
-    machineId: string,
-    opts: {
-      cwd: string;
-      model?: string;
-      thinkingLevel?: SpawnThinkingLevel;
-      approvalMode: ApprovalMode;
-    },
-  ): Promise<boolean>;
+  onSpawn(machineId: string, opts: SpawnOptions): Promise<boolean>;
+  /**
+   * Reopen a session that ended this load, on the machine it ran on, as a
+   * resume spawn with the saved launch defaults. False when it cannot be sent.
+   * Undefined where no host can answer (the dev previews).
+   */
+  onContinue?(sessionId: string): Promise<boolean>;
+  /**
+   * New session's Past sessions: a machine's stored (not running) sessions of
+   * one project. `request` asks the machine (`historyRequest`, a read like
+   * `sync`, so no passkey check), false when it cannot be reached;
+   * `entries` is its answer, undefined until one lands. Undefined where no
+   * host can answer (the dev previews).
+   */
+  history?: {
+    request(machineId: string, cwd: string): boolean;
+    entries(
+      machineId: string,
+      cwd: string,
+    ): readonly HistoryEntry[] | undefined;
+  };
   onInteractionReply(
     sessionId: string,
     id: string,
@@ -711,7 +723,14 @@ class Workspace {
     this.#pendingMark.replaceChildren(
       failed ? icon("terminal") : element("div", "spawn-spinner"),
     );
-    setText(this.#pendingEyebrow, failed ? "Start failed" : "Starting session");
+    setText(
+      this.#pendingEyebrow,
+      failed
+        ? "Start failed"
+        : pending.resume === undefined
+          ? "Starting session"
+          : "Resuming session",
+    );
     setText(
       this.#pendingTitle,
       failed ? "Couldn't start the session" : pending.project,

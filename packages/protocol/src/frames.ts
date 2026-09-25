@@ -230,6 +230,11 @@ export const SpawnThinkingLevel = z.enum([
 ]);
 export type SpawnThinkingLevel = z.infer<typeof SpawnThinkingLevel>;
 /**
+ * An omp session id as the host's session store names it (a UUID, lowercase
+ * hex). A closed charset because a resume id reaches a command line.
+ */
+export const StoredSessionId = z.string().regex(/^[0-9a-f][0-9a-f-]{7,63}$/);
+/**
  * Phone → agent: launch a new `omp` session on the machine. `machineId` names
  * the target (the sealed channel is already per-machine; included per contract).
  * `cwd` is the project directory; `model` is optional; `approvalMode` is
@@ -237,6 +242,8 @@ export type SpawnThinkingLevel = z.infer<typeof SpawnThinkingLevel>;
  * `spawnId` is a phone-generated nonce the host exports to the child as
  * `OMP_REMOTE_SPAWN_ID` and the bridge echoes back in `SessionMeta.spawnId`, so
  * the PWA can correlate the launch with exactly the session it started.
+ * `resume` reopens a stored session of this `cwd` (`omp --resume <id>`); omp
+ * restores that session's own model, so the host ignores `model` then.
  */
 export const SpawnFrame = z.object({
   t: z.literal("spawn"),
@@ -248,6 +255,32 @@ export const SpawnFrame = z.object({
   thinkingLevel: SpawnThinkingLevel.optional(),
   approvalMode: ApprovalMode,
   spawnId: z.string(),
+  resume: StoredSessionId.optional(),
+});
+/**
+ * Phone → agent: list the stored (not running) omp sessions of one project
+ * directory, newest activity first. A read, like `sync`: not a
+ * {@link ControlFrame}. The agent answers with a {@link HistoryFrame}.
+ */
+export const HistoryRequestFrame = z.object({
+  t: z.literal("historyRequest"),
+  cwd: z.string(),
+});
+/** One stored session in a {@link HistoryFrame}. Times are epoch ms. */
+export const HistoryEntry = z.object({
+  sessionId: StoredSessionId,
+  title: z.string().optional(),
+  startedAt: z.number(),
+  lastActiveAt: z.number(),
+});
+/**
+ * Agent → client: the stored sessions of `cwd` (echoed exactly as requested),
+ * newest `lastActiveAt` first, at most 50, excluding sessions running now.
+ */
+export const HistoryFrame = z.object({
+  t: z.literal("history"),
+  cwd: z.string(),
+  entries: z.array(HistoryEntry),
 });
 /**
  * Phone → agent: request a fresh session-list snapshot. A phone attaching to an
@@ -603,6 +636,7 @@ export const DownlinkFrame = z.discriminatedUnion("t", [
   ResourceAbortFrame,
   MediaFetchFrame,
   NotifyPolicyFrame,
+  HistoryRequestFrame,
 ]);
 /**
  * The state-changing subset of `DownlinkFrame` — every action gated behind a
@@ -625,8 +659,13 @@ export const AnyFrame = z.union([
   DownlinkFrame,
   PromptControlReadyFrame,
 ]);
-/** Everything the agent may push to a connected client: snapshots + relayed uplink frames. */
-export const ClientMessage = z.union([SessionsFrame, UplinkFrame]);
+/** Everything the agent may push to a connected client: snapshots, stored
+ *  session history, and relayed uplink frames. */
+export const ClientMessage = z.union([
+  SessionsFrame,
+  HistoryFrame,
+  UplinkFrame,
+]);
 /**
  * Everything the sealed phone↔host-agent `SealedChannel` may carry, in either
  * direction: the machine's session snapshot + relayed uplink frames (agent→phone)
@@ -634,7 +673,12 @@ export const ClientMessage = z.union([SessionsFrame, UplinkFrame]);
  * deliberately broader than IPC `Frame`/`AnyFrame`, which the bridge↔agent
  * loopback uses and which never carries a `SessionsFrame`.
  */
-export const SealedFrame = z.union([SessionsFrame, UplinkFrame, DownlinkFrame]);
+export const SealedFrame = z.union([
+  SessionsFrame,
+  HistoryFrame,
+  UplinkFrame,
+  DownlinkFrame,
+]);
 
 export type UplinkFrame = z.infer<typeof UplinkFrame>;
 export type DownlinkFrame = z.infer<typeof DownlinkFrame>;
@@ -645,6 +689,10 @@ export type ControlFrame = z.infer<typeof ControlFrame>;
 export type ApprovalMode = z.infer<typeof ApprovalMode>;
 export type Frame = z.infer<typeof AnyFrame>;
 export type SessionsFrame = z.infer<typeof SessionsFrame>;
+export type HistoryFrame = z.infer<typeof HistoryFrame>;
+export type HistoryEntry = z.infer<typeof HistoryEntry>;
+export type HistoryRequestFrame = z.infer<typeof HistoryRequestFrame>;
+export type SpawnFrame = z.infer<typeof SpawnFrame>;
 export type MsgFrame = z.infer<typeof MsgFrame>;
 export type ServiceTierFrame = z.infer<typeof ServiceTierFrame>;
 export type JobsFrame = z.infer<typeof JobsFrame>;

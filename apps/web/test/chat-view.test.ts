@@ -179,12 +179,14 @@ test("each chat preference persists: a new preference object reads it back", () 
     chat.timestamps,
     chat.thinkingExpanded,
     chat.toolOutputExpanded,
-  ]).toEqual([true, "default", false, false, false]);
+    chat.toolGrouping,
+  ]).toEqual([true, "default", false, false, false, "3"]);
   chat.setAutoScroll(false);
   chat.setTextSize("large");
   chat.setTimestamps(true);
   chat.setThinkingExpanded(true);
   chat.setToolOutputExpanded(true);
+  chat.setToolGrouping("off");
 
   const reloaded = new ChatPreferences();
   expect([
@@ -193,7 +195,8 @@ test("each chat preference persists: a new preference object reads it back", () 
     reloaded.timestamps,
     reloaded.thinkingExpanded,
     reloaded.toolOutputExpanded,
-  ]).toEqual([false, "large", true, true, true]);
+    reloaded.toolGrouping,
+  ]).toEqual([false, "large", true, true, true, "off"]);
 });
 
 test("a stored value the app no longer knows falls back alone, keeping the rest", () => {
@@ -339,6 +342,46 @@ test("new thinking and tool cards start as the settings say, and a reader's own 
   view.dispose();
 });
 
+test("runs of tool calls fold into a closed group; a message ends a run, and the setting regroups live", () => {
+  const chat = new ChatPreferences();
+  const { view, draw } = mount(chat);
+  draw(
+    msg("u1", "user", "go"),
+    tool("a1"),
+    msg("t1", "thinking", "hmm"),
+    tool("a2"),
+    tool("a3"),
+    msg("r1", "assistant", "halfway"),
+    tool("b1"),
+    tool("b2"),
+  );
+  const groups = (): HTMLDetailsElement[] => [
+    ...view.node.querySelectorAll<HTMLDetailsElement>("details.tool-group"),
+  ];
+  const counts = (): string[] =>
+    groups().map((g) => g.querySelector(".tool-name")?.textContent ?? "");
+  // Thinking between calls stays inside the run; the reply ends it, and the
+  // two calls after the reply are below the default of three.
+  expect(counts()).toEqual(["3 tool calls"]);
+  const [first] = groups();
+  expect(first?.open).toBe(false);
+  expect(first?.querySelectorAll("details.tool-card").length).toBe(3);
+  expect(first?.querySelector(".message-thinking")).not.toBeNull();
+
+  // A third call after the reply starts its own group.
+  draw(tool("b3"));
+  expect(counts()).toEqual(["3 tool calls", "3 tool calls"]);
+
+  chat.setToolGrouping("5");
+  expect(counts()).toEqual([]);
+  expect(view.node.querySelectorAll("details.tool-card").length).toBe(6);
+  chat.setToolGrouping("2");
+  expect(counts()).toEqual(["3 tool calls", "3 tool calls"]);
+  chat.setToolGrouping("off");
+  expect(counts()).toEqual([]);
+  view.dispose();
+});
+
 test("Settings > Chat saves each choice for the next load", () => {
   const history = new FakeHistory();
   const nav = installSessionHistory({
@@ -382,6 +425,7 @@ test("Settings > Chat saves each choice for the next load", () => {
   turn("Timestamps", true);
   turn("Expand thinking", true);
   turn("Expand tool output", true);
+  choose("Group tool calls", "10");
 
   const saved = new ChatPreferences();
   expect([
@@ -390,7 +434,8 @@ test("Settings > Chat saves each choice for the next load", () => {
     saved.timestamps,
     saved.thinkingExpanded,
     saved.toolOutputExpanded,
-  ]).toEqual([false, "small", true, true, true]);
+    saved.toolGrouping,
+  ]).toEqual([false, "small", true, true, true, "10"]);
 });
 
 test("a system message shows as a collapsed notice card: its kind's label, a first-line preview, and the unwrapped body with no raw HTML", () => {

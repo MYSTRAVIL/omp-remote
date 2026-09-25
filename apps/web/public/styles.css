@@ -1376,6 +1376,28 @@ legend {
 .tool-card + .message {
   margin-top: calc(32px * var(--density));
 }
+/* A run of tool calls folded under one line: "17 tool calls". */
+.tool-group {
+  margin: calc(10px * var(--density)) 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.tool-group[open] > .tool-summary {
+  background: var(--surface-hover);
+}
+.tool-group[open] > .tool-summary > .icon:last-child {
+  transform: rotate(90deg);
+}
+.tool-group:not(.done) > .tool-summary {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.tool-group-body {
+  padding: 0 10px;
+  border-top: 1px solid var(--border);
+}
+.tool-group + .message {
+  margin-top: calc(32px * var(--density));
+}
 /* A host notice (a background result, a reminder): a tool card labelled by
    its kind, previewing its first line, with the markdown body underneath. */
 .notice-card .message-time {
@@ -1775,6 +1797,12 @@ legend {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
+  margin: 0 0 12px;
+}
+/* Continue on an ended session: a full-width tap target under its notice. */
+.composer-continue {
+  width: 100%;
+  min-height: 44px;
   margin: 0 0 12px;
 }
 /* Model + effort chip that opens the picker, in the composer control row. */
@@ -3092,6 +3120,7 @@ body > .pair-status {
   .switch,
   .model-picker.is-inline,
   .tool-card,
+  .tool-group,
   .approval-input-details,
   .composer-input,
   .question-input,
@@ -3125,6 +3154,7 @@ body > .pair-status {
   .settings-machines,
   .model-picker.is-inline,
   .tool-card,
+  .tool-group,
   .approval-input-details,
   .composer-menu,
   .composer-input,
@@ -3140,6 +3170,7 @@ body > .pair-status {
     border-radius: calc(var(--cut-well) - 1px);
   }
   .tool-card[open] .tool-summary,
+  .tool-group[open] > .tool-summary,
   .approval-input-details[open] .details-summary {
     border-bottom-right-radius: 0;
     border-bottom-left-radius: 0;
@@ -3249,4 +3280,48 @@ body > .pair-status {
     background: Canvas;
     opacity: 0.85;
   }
+}
+/* New session > Past sessions: a toggle under the project, then the
+   project's stored sessions in a bordered well, each row a tap to resume;
+   resuming shows a note with Start new instead where the model was. */
+.spawn-project > .spawn-past-toggle {
+  align-self: flex-start;
+}
+.spawn-past-status {
+  margin: 0;
+}
+.spawn-past > .spawn-past-list {
+  margin: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.spawn-past-status:not([hidden]) + .spawn-past-list {
+  margin-top: 8px;
+}
+.spawn-past-item + .spawn-past-item {
+  border-top: 1px solid var(--border);
+}
+.spawn-past-entry > .button-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spawn-resume {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin: calc(22px * var(--density)) 0;
+  padding: calc(14px * var(--density)) 16px;
+  border: 1px solid var(--border);
+}
+.spawn-resume > .section-copy {
+  flex: 1 1 220px;
+  margin: 0;
+}
+.spawn-past-entry > .model-picker-option-detail {
+  flex: none;
+  white-space: nowrap;
 }

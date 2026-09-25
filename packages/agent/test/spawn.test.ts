@@ -96,6 +96,32 @@ test("spawnArgs passes realistic omp model ids through verbatim", () => {
     expect(spawnArgs({ model })).toEqual(["--model", model]);
 });
 
+test("spawnArgs resumes a stored session and drops the model omp restores itself", () => {
+  const resume = "01a0d583-7bf6-7189-8598-2108d0d52a01";
+  expect(
+    spawnArgs({
+      resume,
+      model: "opus",
+      thinkingLevel: "high",
+      approvalMode: "write",
+    }),
+  ).toEqual([
+    "--resume",
+    resume,
+    "--thinking",
+    "high",
+    "--approval-mode",
+    "write",
+  ]);
+  // The ignored model is not validated either: it never reaches the argv.
+  expect(spawnArgs({ resume, model: "x&calc" })).toEqual(["--resume", resume]);
+});
+
+test("spawnArgs refuses a resume id outside the stored-session charset", () => {
+  for (const resume of ["--help", "abc&calc", "ABCDEF12-0000", "a\nbcdefgh"])
+    expect(() => spawnArgs({ resume })).toThrow();
+});
+
 test("a win32 cwd must be a drive-letter path, without quotes or control characters", () => {
   for (const cwd of [
     "proj",

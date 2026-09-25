@@ -3,6 +3,10 @@ import { z } from "zod";
 const TextSize = z.enum(["small", "default", "large"]);
 export type ChatTextSize = z.infer<typeof TextSize>;
 
+/** Group a run of this many tool calls or more under one line; "off" never groups. */
+const ToolGrouping = z.enum(["off", "2", "3", "5", "10"]);
+export type ChatToolGrouping = z.infer<typeof ToolGrouping>;
+
 const STORAGE_KEY = "omp-remote.chat.preferences";
 
 /** Each field falls back on its own, so one unknown value never resets the rest. */
@@ -12,6 +16,7 @@ const StoredChat = z.object({
   timestamps: z.boolean().catch(false),
   thinkingExpanded: z.boolean().catch(false),
   toolOutputExpanded: z.boolean().catch(false),
+  toolGrouping: ToolGrouping.catch("3"),
 });
 type StoredChat = z.infer<typeof StoredChat>;
 
@@ -58,6 +63,16 @@ export class ChatPreferences {
     return this.#values.toolOutputExpanded;
   }
 
+  get toolGrouping(): ChatToolGrouping {
+    return this.#values.toolGrouping;
+  }
+
+  /** The fewest tool calls in a run that fold into a group; 0 when grouping is off. */
+  get toolGroupMin(): number {
+    const grouping = this.#values.toolGrouping;
+    return grouping === "off" ? 0 : Number(grouping);
+  }
+
   setAutoScroll(on: boolean): boolean {
     return this.#commit({ ...this.#values, autoScroll: on });
   }
@@ -76,6 +91,10 @@ export class ChatPreferences {
 
   setToolOutputExpanded(on: boolean): boolean {
     return this.#commit({ ...this.#values, toolOutputExpanded: on });
+  }
+
+  setToolGrouping(grouping: ChatToolGrouping): boolean {
+    return this.#commit({ ...this.#values, toolGrouping: grouping });
   }
 
   /** Call `listener` after every change; returns the unsubscribe. */

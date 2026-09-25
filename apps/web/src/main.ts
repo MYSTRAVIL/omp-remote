@@ -40,6 +40,7 @@ import {
 import { connectionStatus } from "./core/connection-state";
 import { installSessionHistory } from "./core/history-nav";
 import { randomId } from "./core/ids";
+import { LaunchPreferences } from "./core/launch-preferences";
 import { LocalClient } from "./core/local-client";
 import { MachineCatalogs } from "./core/machine-catalogs";
 import { MachineLabels } from "./core/machine-labels";
@@ -58,6 +59,7 @@ import { AttachmentUploader } from "./core/resource-upload";
 import { checkSession } from "./core/session-check";
 import { SessionListCache } from "./core/session-list-cache";
 import { SignInPreferences } from "./core/sign-in-preferences";
+import { spawnFrame } from "./core/spawn-frame";
 import { AppStore } from "./core/store";
 import { type NotifyMachine, saveNotifyKeys } from "./core/sw-caches";
 import {
@@ -191,9 +193,10 @@ function beginPendingSpawn(
   machineId: string,
   cwd: string,
   spawnId: string,
+  resume: string | undefined,
 ): void {
   clearSpawnTimer();
-  store.beginSpawn({ machineId, cwd, spawnId });
+  store.beginSpawn({ machineId, cwd, spawnId, resume });
   spawnTimer = window.setTimeout(() => {
     spawnTimer = undefined;
     store.failSpawn();
@@ -202,6 +205,23 @@ function beginPendingSpawn(
 function cancelPendingSpawn(): void {
   clearSpawnTimer();
   store.clearSpawn();
+}
+/**
+ * Continue: reopen a session that ended this load as a resume spawn on its own
+ * machine and project, with the saved default approval mode. omp restores the
+ * session's own model; read the preference now, since Settings may change it.
+ */
+function continueSession(
+  sessionId: string,
+  spawn: ControlHandlers["onSpawn"],
+): Promise<boolean> {
+  const ended = store.endedSession(sessionId);
+  if (!ended) return Promise.resolve(false);
+  return spawn(ended.machineId, {
+    cwd: ended.meta.cwd,
+    approvalMode: new LaunchPreferences().approvalMode,
+    resume: sessionId,
+  });
 }
 let client: PhoneClient | undefined;
 let sessionToken: string | undefined;
@@ -392,17 +412,22 @@ const handlers: ControlHandlers = {
   },
   onSpawn: async (machineId, opts) => {
     const spawnId = randomId();
-    const sent = sendControl(machineId, {
-      t: "spawn",
-      machineId,
-      cwd: opts.cwd,
-      model: opts.model,
-      thinkingLevel: opts.thinkingLevel,
-      approvalMode: opts.approvalMode,
-      spawnId,
-    });
-    if (sent) beginPendingSpawn(machineId, opts.cwd, spawnId);
+    const sent = sendControl(machineId, spawnFrame(machineId, opts, spawnId));
+    if (sent) beginPendingSpawn(machineId, opts.cwd, spawnId, opts.resume);
     return sent;
+  },
+  onContinue: (sessionId) => continueSession(sessionId, handlers.onSpawn),
+  // A read like `sync`: straight onto the sealed channel, no passkey check.
+  // The held answer is dropped first, so the list loads afresh.
+  history: {
+    request: (machineId, cwd) => {
+      const channel = client?.channelFor(machineId);
+      if (!channel) return false;
+      store.clearHistory(machineId, cwd);
+      channel.sendFrame({ t: "historyRequest", cwd });
+      return true;
+    },
+    entries: (machineId, cwd) => store.historyFor(machineId, cwd),
   },
   onCancelSpawn: cancelPendingSpawn,
   onInteractionReply: async (sessionId, id, response) => {
@@ -539,17 +564,18 @@ function connectLocal(): void {
     },
     onSpawn: async (machineId, opts) => {
       const spawnId = randomId();
-      const sent = send({
-        t: "spawn",
-        machineId,
-        cwd: opts.cwd,
-        model: opts.model,
-        thinkingLevel: opts.thinkingLevel,
-        approvalMode: opts.approvalMode,
-        spawnId,
-      });
-      if (sent) beginPendingSpawn(machineId, opts.cwd, spawnId);
+      const sent = send(spawnFrame(machineId, opts, spawnId));
+      if (sent) beginPendingSpawn(machineId, opts.cwd, spawnId, opts.resume);
       return sent;
+    },
+    onContinue: (sessionId) =>
+      continueSession(sessionId, activeHandlers.onSpawn),
+    history: {
+      request: (machineId, cwd) => {
+        store.clearHistory(machineId, cwd);
+        return send({ t: "historyRequest", cwd });
+      },
+      entries: (machineId, cwd) => store.historyFor(machineId, cwd),
     },
     onCancelSpawn: cancelPendingSpawn,
     onRenameMachine: renameMachine,
