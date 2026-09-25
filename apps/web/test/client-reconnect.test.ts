@@ -834,6 +834,119 @@ test("probe() keeps a link the relay pongs; a link with no pong in time, or none
   expect(h.sched.timers).toHaveLength(0);
 });
 
+test("a resume probe holds each listed machine as syncing until its pong; with no pong, until the redial's resync lands", async () => {
+  const { phone, agent } = await pair();
+  const store = new AppStore();
+  const sched = new FakeScheduler();
+  const sockets: FakeSocket[] = [];
+  const client = new PhoneClient(
+    () => {
+      const s = new FakeSocket();
+      sockets.push(s);
+      return s;
+    },
+    [{ machineId: "m1", keys: phone }],
+    store,
+    { scheduler: sched, keepaliveMs: 0, dialTimeoutMs: 0 },
+  );
+  const syncing = () => store.tree().map((m) => m.syncing === true);
+  const m1 = new FakeAgent(agent, "m1");
+  client.start();
+  const first = sockets[0];
+  if (!first) throw new Error("no socket dialled");
+  first.fireOpen();
+  // Listed by the relay, its list not in yet: syncing, not "0 sessions".
+  first.deliver(JSON.stringify({ type: "machines", machineIds: ["m1"] }));
+  expect(syncing()).toEqual([true]);
+  m1.connect(first);
+  m1.relay();
+  first.deliver(m1.seal({ t: "sessions", sessions: [] }));
+  expect(syncing()).toEqual([false]);
+
+  // Back from the background: the list is in doubt until the relay pongs.
+  client.probe();
+  expect(syncing()).toEqual([true]);
+  first.deliver(JSON.stringify({ type: "pong" }));
+  expect(syncing()).toEqual([false]);
+
+  // A dead socket never pongs: the probe redials, and only the new socket's
+  // resync brings the list back. A pong there answers no probe.
+  client.probe();
+  sched.fireTimers();
+  const second = sockets[1];
+  if (!second) throw new Error("no redial");
+  expect(syncing()).toEqual([true]);
+  second.fireOpen();
+  second.deliver(JSON.stringify({ type: "pong" }));
+  expect(syncing()).toEqual([true]);
+  m1.connect(second);
+  m1.relay();
+  second.deliver(m1.seal({ t: "sessions", sessions: [meta] }));
+  expect(syncing()).toEqual([false]);
+  expect(store.tree()[0]?.projects[0]?.sessions[0]?.id).toBe("s1");
+});
+
+test("a socket that drops while open leaves every list syncing until its machine's next snapshot", async () => {
+  const { phone, agent } = await pair();
+  const store = new AppStore();
+  const sched = new FakeScheduler();
+  const sockets: FakeSocket[] = [];
+  const client = new PhoneClient(
+    () => {
+      const s = new FakeSocket();
+      sockets.push(s);
+      return s;
+    },
+    [{ machineId: "m1", keys: phone }],
+    store,
+    { scheduler: sched, keepaliveMs: 0, dialTimeoutMs: 0 },
+  );
+  const m1 = new FakeAgent(agent, "m1");
+  client.start();
+  const first = sockets[0];
+  if (!first) throw new Error("no socket dialled");
+  first.fireOpen();
+  m1.connect(first);
+  m1.relay();
+  first.deliver(m1.seal({ t: "sessions", sessions: [meta] }));
+  expect(store.tree()[0]?.syncing).toBeUndefined();
+
+  first.fireClose();
+  expect(store.tree()[0]?.syncing).toBe(true);
+  sched.fireTimers();
+  sockets[1]?.fireOpen();
+  expect(store.tree()[0]?.syncing).toBe(true);
+  const second = sockets[1];
+  if (!second) throw new Error("no redial");
+  m1.connect(second);
+  m1.relay();
+  second.deliver(m1.seal({ t: "sessions", sessions: [meta] }));
+  expect(store.tree()[0]?.syncing).toBeUndefined();
+});
+
+test("probe() redials at once a dial left pending from before the page was hidden, and leaves a fresh one to open", async () => {
+  let clock = 0;
+  const h = await harness({
+    now: () => clock,
+    dialTimeoutMs: 8_000,
+    probeTimeoutMs: 3_000,
+  });
+  h.client.start();
+  // Hidden mid-dial; back a minute later with that dial still pending.
+  clock = 60_000;
+  h.client.probe();
+  expect(h.sockets[0]?.closedByClient).toBe(true);
+  expect(h.sockets).toHaveLength(2);
+  // Only the new dial's deadline is pending: no backoff wait first.
+  expect(h.sched.timers).toHaveLength(1);
+
+  // A dial just begun (the network came back first) is left to open.
+  h.client.probe();
+  expect(h.sockets).toHaveLength(2);
+  h.sockets[1]?.fireOpen();
+  expect(h.client.relayState).toBe("connected");
+});
+
 test("wake() starts the backoff over, so a retry after it waits the shortest delay", async () => {
   const h = await harness({
     random: () => 0,

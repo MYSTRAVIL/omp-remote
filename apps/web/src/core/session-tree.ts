@@ -11,6 +11,11 @@ export interface MachineSessions {
   catalog?: MachineCatalog;
   /** Rows are the device's cached last list, awaiting this load's live snapshot. */
   stale?: true;
+  /**
+   * Rows await a live snapshot (cached, just listed, or the relay link lost or
+   * being checked): the list shows the machine as syncing, never "0 sessions".
+   */
+  syncing?: true;
   /** The relay's live machine list no longer carries it: rows are its last known list. */
   offline?: true;
 }
@@ -31,6 +36,8 @@ export interface MachineNode {
   catalog?: MachineCatalog;
   /** Rows are the device's cached last list, awaiting this load's live snapshot. */
   stale?: true;
+  /** Rows await a live snapshot; see {@link MachineSessions.syncing}. */
+  syncing?: true;
   /** The relay's live machine list no longer carries it: rows are its last known list. */
   offline?: true;
 }
@@ -50,6 +57,7 @@ export function assembleTree(machines: MachineSessions[]): MachineNode[] {
       projects: groupProjects(m.sessions),
       ...(m.catalog ? { catalog: m.catalog } : {}),
       ...(m.stale ? { stale: m.stale } : {}),
+      ...(m.syncing ? { syncing: m.syncing } : {}),
       ...(m.offline ? { offline: m.offline } : {}),
     }));
 }

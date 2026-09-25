@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { SessionMeta } from "@omp-remote/protocol";
 import type { MachineNode } from "../src/core/session-tree";
+import { AppStore } from "../src/core/store";
 import { type ControlHandlers, renderTree } from "../src/ui/render";
 
 // Register a DOM only for this file so happy-dom's globals never leak into the
@@ -32,7 +33,8 @@ function machine(stale: boolean): MachineNode {
         sessions: [session("s1", "Fix the login"), session("s2", "Ship it")],
       },
     ],
-    ...(stale ? { stale: true } : {}),
+    // A cached machine awaits its live list, as the store marks it.
+    ...(stale ? { stale: true, syncing: true } : {}),
   };
 }
 
@@ -123,4 +125,45 @@ test("a stale machine says it is updating until its live list lands", () => {
   expect(row().querySelector(".session-row-title")?.textContent).toBe(
     "Fix the login",
   );
+});
+
+/** What the node shows: its text without the parts hidden from view. */
+function shown(node: Element): string {
+  const copy = node.cloneNode(true);
+  if (!(copy instanceof Element)) throw new Error("not an element");
+  for (const hidden of copy.querySelectorAll("[hidden]")) hidden.remove();
+  return copy.textContent ?? "";
+}
+
+test("a machine without its live list says it is syncing, never 0 sessions; with none live, it says why and points at Past sessions", () => {
+  const { root, draw } = mount();
+  const store = new AppStore();
+  const group = () => {
+    draw(store.tree(), store.connecting());
+    const node = root.querySelector(".machine-group");
+    if (!node) throw new Error("machine not rendered");
+    return node;
+  };
+
+  // Listed by the relay, its snapshot not in yet.
+  store.setMachineList(["tower"]);
+  const syncing = shown(group());
+  expect(syncing).toContain("Syncing sessions…");
+  expect(syncing).not.toContain("0");
+  expect(syncing).not.toContain("No live sessions");
+
+  // Its snapshot lists nothing running.
+  store.applyFrame("tower", { t: "sessions", sessions: [] });
+  const empty = shown(group());
+  expect(empty).not.toContain("Syncing");
+  expect(empty).toContain("No live sessions.");
+  expect(empty).toContain("after the bridge was installed");
+  expect(empty).toContain("Past sessions");
+  expect(group().querySelector(".machine-count")?.textContent).toBe("0");
+
+  // Offline, it has nothing on the way and needs no bridge hint.
+  store.setMachineList([]);
+  const offline = shown(group());
+  expect(offline).not.toContain("Syncing");
+  expect(offline).not.toContain("Past sessions");
 });

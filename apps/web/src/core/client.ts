@@ -79,7 +79,10 @@ export interface PhoneClientOptions {
    * a dial hanging far longer than a retry takes.
    */
   dialTimeoutMs?: number;
-  /** How long `probe()` waits for the relay's pong before redialling, ms; default 3_000. */
+  /**
+   * How long `probe()` waits for the relay's pong before redialling, ms, and
+   * how old a pending dial must be for `probe()` to redial it; default 3_000.
+   */
   probeTimeoutMs?: number;
   /** Asks the relay whether the token is still accepted (HTTP). */
   checkSession?: () => Promise<SessionCheck>;
@@ -239,6 +242,8 @@ export class PhoneClient {
   #cancelDial: (() => void) | undefined;
   /** The pong deadline `probe()` armed; only a pong disarms it. */
   #cancelProbe: (() => void) | undefined;
+  /** When the current dial began, by `now`; see `probe()`. */
+  #dialStartedAt = 0;
 
   constructor(
     factory: () => ClientSocket,
@@ -351,11 +356,13 @@ export class PhoneClient {
    * Check the link on resume without dropping a healthy one. A backgrounded
    * PWA freezes its keepalive, so the relay may have idle-closed the socket
    * while the frozen tab never saw it (half-open). A link that is down and
-   * waiting out its backoff redials at once. An open one is pinged and kept
-   * if the relay's pong comes back within `probeTimeoutMs`; else it is
+   * waiting out its backoff redials at once, and so does a dial pending since
+   * before the page was hidden (older than `probeTimeoutMs`); a newer dial
+   * (the network just came back) is left to open. An open one is pinged and
+   * kept if the relay's pong comes back within `probeTimeoutMs`; else it is
    * redialled as `wake()` does. Only a pong counts: lines the browser queued
-   * while the tab was frozen prove nothing about the socket now. A dial in
-   * flight is left to its own timeout.
+   * while the tab was frozen prove nothing about the socket now. Until the
+   * pong, every machine's list shows as syncing (`AppStore.doubtLists`).
    */
   probe(): void {
     if (this.#stopped) return;
@@ -364,7 +371,13 @@ export class PhoneClient {
       this.wake();
       return;
     }
-    if (!this.#connected || this.#cancelProbe !== undefined) return;
+    if (!this.#connected) {
+      if (this.#now() - this.#dialStartedAt >= this.#probeTimeoutMs)
+        this.wake();
+      return;
+    }
+    if (this.#cancelProbe !== undefined) return;
+    this.#store.doubtLists();
     socket.send(JSON.stringify({ type: "ping" }));
     const gen = this.#generation;
     this.#cancelProbe = this.#scheduler.setTimer(() => {
@@ -378,9 +391,11 @@ export class PhoneClient {
    * keepalive, pong and probe deadlines), orphan its callbacks (generation check) so its
    * own close can't schedule a competing reconnect nor a late line land, then
    * close it. The run of failed dials ends with it, so a session check still
-   * out is ignored when it answers.
+   * out is ignored when it answers. An open socket takes the lists' currency
+   * with it: each machine syncs until the next socket resends its list.
    */
   #leaveSocket(): void {
+    const wasOpen = this.#connected;
     this.#cancelReconnect?.();
     this.#cancelReconnect = undefined;
     this.#disarmDial();
@@ -391,6 +406,7 @@ export class PhoneClient {
     this.#generation += 1;
     this.#endStreak();
     socket?.close();
+    if (wasOpen) this.#store.awaitSnapshots();
   }
 
   #connect(): void {
@@ -403,6 +419,7 @@ export class PhoneClient {
     }
     const socket = this.#factory();
     this.#socket = socket;
+    this.#dialStartedAt = this.#now();
     this.#generation += 1;
     const gen = this.#generation;
     socket.onOpen(() => this.#onOpen(gen));
@@ -481,7 +498,9 @@ export class PhoneClient {
     this.#relayChanged();
     this.#stopKeepalive();
     this.#scheduleReconnect();
-    if (!opened) this.#onDialFailed();
+    // Frames sent meanwhile are lost with the socket: the next one resyncs.
+    if (opened) this.#store.awaitSnapshots();
+    else this.#onDialFailed();
   }
 
   /**
@@ -583,9 +602,13 @@ export class PhoneClient {
       this.#store.setMachineList(
         msg.machineIds.filter((machineId) => this.#paired.has(machineId)),
       );
-    // A pong answers a resume probe. It also disarmed the keepalive deadline,
-    // as any line does. "error" is surfaced by the shell.
-    if (msg.type === "pong") this.#disarmProbe();
+    // A pong answers a resume probe: the link stayed up, so the lists are
+    // current. It also disarmed the keepalive deadline, as any line does.
+    // "error" is surfaced by the shell.
+    if (msg.type === "pong" && this.#cancelProbe !== undefined) {
+      this.#disarmProbe();
+      this.#store.confirmLists();
+    }
   }
 
   #startKeepalive(): void {

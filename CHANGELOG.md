@@ -108,6 +108,14 @@ All notable changes to omp-remote are documented here. The format follows
 - `omp-remote run` no longer exits when nobody enters the pairing code in time.
   It shows a fresh code and QR and keeps the server running. `omp-remote pair`
   still exits non-zero on a timeout (#5).
+- Reopening the app no longer shows a machine as "0 sessions" while its list
+  is on the way. Until the machine's list arrives, and while the app checks the
+  link after coming back to the foreground, the machine shows "Syncing
+  sessions…". A connection attempt left over from before the app went to the
+  background is retried at once (#4).
+- A machine with no live sessions explains that only omp sessions started
+  after the bridge was installed show there, and points to New session › Past
+  sessions (#4).
 
 ### Security
 

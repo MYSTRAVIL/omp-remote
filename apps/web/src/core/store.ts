@@ -133,6 +133,17 @@ export class AppStore {
   readonly #presence: MachinePresence | undefined;
   /** Machines whose rows still come from that cache (no live snapshot yet). */
   readonly #stale = new Set<string>();
+  /**
+   * Machines whose rows await a live snapshot: rows from that cache, a machine
+   * just listed, or rows the relay link may have missed changes to (see
+   * `awaitSnapshots` and `doubtLists`). The tree shows them as syncing.
+   */
+  readonly #syncing = new Set<string>();
+  /**
+   * Machines `doubtLists` marked syncing whose rows were current until then:
+   * the resume probe's pong (`confirmLists`) makes them current again.
+   */
+  readonly #doubted = new Set<string>();
   /** Cached machines no live machine list or frame has named yet this load. */
   readonly #cachedOnly = new Set<string>();
   /**
@@ -158,10 +169,10 @@ export class AppStore {
 
   /**
    * Paint the device's cached session list before the client connects. Each
-   * cached machine is marked stale until its live snapshot replaces its rows;
-   * one the first live machine list does not carry is dropped, never having
-   * been seen online this load. Machines the store already holds live data for
-   * are left alone.
+   * cached machine is marked stale (and syncing) until its live snapshot
+   * replaces its rows; one the first live machine list does not carry is
+   * dropped, never having been seen online this load. Machines the store
+   * already holds live data for are left alone.
    */
   restoreCachedList(): void {
     const cached = this.#sessionCache?.load() ?? [];
@@ -174,6 +185,7 @@ export class AppStore {
         sessions: machine.sessions.map((s) => ({ ...s, pid: 0 })),
       });
       this.#stale.add(machine.machineId);
+      this.#syncing.add(machine.machineId);
       this.#cachedOnly.add(machine.machineId);
       changed = true;
     }
@@ -183,6 +195,53 @@ export class AppStore {
   /** True until this load's first live machine list or snapshot arrives. */
   connecting(): boolean {
     return !this.#live;
+  }
+
+  /**
+   * The relay link carrying every machine's frames was lost: the new one's
+   * sync resends each list, and until then every machine's rows may be out of
+   * date, so each syncs until its next snapshot. A pong can no longer vouch
+   * for rows `doubtLists` marked.
+   */
+  awaitSnapshots(): void {
+    this.#doubted.clear();
+    let changed = false;
+    for (const id of this.#machines.keys()) {
+      if (this.#syncing.has(id)) continue;
+      this.#syncing.add(id);
+      changed = true;
+    }
+    if (changed) this.#emit();
+  }
+
+  /**
+   * The app came back from the background and the relay link is being
+   * checked: the rows may be out of date if it died meanwhile, so each machine
+   * with current rows syncs until the check's pong (`confirmLists`) or its next
+   * snapshot, whichever comes first.
+   */
+  doubtLists(): void {
+    let changed = false;
+    for (const id of this.#machines.keys()) {
+      if (this.#syncing.has(id)) continue;
+      this.#syncing.add(id);
+      this.#doubted.add(id);
+      changed = true;
+    }
+    if (changed) this.#emit();
+  }
+
+  /**
+   * The relay answered the check: the link stayed up, so every frame sent
+   * before the pong has landed and the rows `doubtLists` marked are current.
+   * Rows that were already awaiting a snapshot keep waiting.
+   */
+  confirmLists(): void {
+    let changed = false;
+    for (const id of this.#doubted)
+      changed = this.#syncing.delete(id) || changed;
+    this.#doubted.clear();
+    if (changed) this.#emit();
   }
 
   getState(): AppState {
@@ -201,13 +260,13 @@ export class AppStore {
   /**
    * Reconcile the set of connected machines from the relay's `machines`
    * control, sent on attach and again whenever a machine's agent registers or
-   * drops. A newly listed machine gets an empty entry so it shows in the tree
-   * before its first snapshot. A machine seen online this load that the list
-   * no longer carries keeps its rows, marked offline, so its sessions (and an
-   * open one's draft) stay put until it returns; a cached machine never seen
-   * online this load is dropped. A disconnected machine takes the attention
-   * flags and pending interactions it owned with it. Every listed machine
-   * counts as seen online now.
+   * drops. A newly listed machine gets an empty entry, syncing until its
+   * first snapshot, so it shows in the tree before then. A machine seen online
+   * this load that the list no longer carries keeps its rows, marked offline,
+   * so its sessions (and an open one's draft) stay put until it returns; a
+   * cached machine never seen online this load is dropped. A disconnected
+   * machine takes the attention flags and pending interactions it owned with
+   * it. Every listed machine counts as seen online now.
    */
   setMachineList(machineIds: string[]): void {
     this.#presence?.observe(machineIds, this.#now());
@@ -217,14 +276,17 @@ export class AppStore {
       if (this.#cachedOnly.delete(id)) {
         this.#machines.delete(id);
         this.#stale.delete(id);
+        this.#syncing.delete(id);
       } else this.#offline.add(id);
     }
     this.#retire((owner) => !connected.has(owner));
     for (const id of machineIds) {
       this.#cachedOnly.delete(id);
       this.#offline.delete(id);
-      if (!this.#machines.has(id))
+      if (!this.#machines.has(id)) {
         this.#machines.set(id, { machineId: id, label: id, sessions: [] });
+        this.#syncing.add(id);
+      }
     }
     this.#live = true;
     this.#saveList();
@@ -262,6 +324,8 @@ export class AppStore {
     if (machine === undefined) return;
     this.#machines.delete(machineId);
     this.#stale.delete(machineId);
+    this.#syncing.delete(machineId);
+    this.#doubted.delete(machineId);
     this.#cachedOnly.delete(machineId);
     this.#offline.delete(machineId);
     for (const session of machine.sessions)
@@ -310,6 +374,8 @@ export class AppStore {
         (owner, sessionId) => owner === machineId && !listed.has(sessionId),
       );
       this.#stale.delete(machineId);
+      this.#syncing.delete(machineId);
+      this.#doubted.delete(machineId);
       this.#live = true;
       this.#saveList();
       this.#emit();
@@ -605,6 +671,9 @@ export class AppStore {
       label: this.#labels.get(machine.machineId) ?? machine.label,
       catalog: this.#machineCatalogs?.catalogFor(machine.machineId),
       ...(this.#stale.has(machine.machineId) ? { stale: true as const } : {}),
+      ...(this.#syncing.has(machine.machineId)
+        ? { syncing: true as const }
+        : {}),
       ...(this.#offline.has(machine.machineId)
         ? { offline: true as const }
         : {}),

@@ -238,7 +238,11 @@ interface MachineGroup {
   /** "Offline" beside the count while the relay no longer lists the machine. */
   offline: HTMLElement;
   list: HTMLElement;
+  /** Stands in for the rows while there are none: syncing, none live, or none reported. */
   empty: HTMLElement;
+  emptyText: HTMLElement;
+  /** Why no session is live, and where earlier ones are: a live machine only. */
+  emptyHint: HTMLElement;
   projects: Map<string, ProjectGroup>;
 }
 
@@ -322,11 +326,14 @@ class SessionNavigation {
           "Not connected to the relay. Its last known sessions stay listed until it reconnects.";
         offline.hidden = true;
         const list = element("div", "machine-projects");
-        const empty = element(
+        const empty = element("div", "machine-empty");
+        const emptyText = element("p", "machine-empty-text");
+        const emptyHint = element(
           "p",
-          "empty machine-empty",
-          "No sessions reported.",
+          "machine-empty-hint",
+          "Only omp sessions started after the bridge was installed show here. Earlier ones are under New session › Past sessions.",
         );
+        empty.append(emptyText, emptyHint);
         title.id = uniqueId("machine");
         node.setAttribute("aria-labelledby", title.id);
         header.append(icon("machine"), title, updating, offline, count);
@@ -339,18 +346,20 @@ class SessionNavigation {
           offline,
           list,
           empty,
+          emptyText,
+          emptyHint,
           projects: new Map(),
         };
         this.#machines.set(machine.machineId, group);
       }
       setText(group.title, machine.label);
-      const stale = machine.stale === true;
+      const syncing = machine.syncing === true;
       const offline = machine.offline === true;
       // An offline machine is not about to report in, so it is not "updating".
-      group.updating.hidden = !stale || offline;
+      group.updating.hidden = !syncing || offline;
       group.offline.hidden = !offline;
-      if (stale) group.node.dataset.stale = "";
-      else delete group.node.dataset.stale;
+      if (syncing) group.node.dataset.syncing = "";
+      else delete group.node.dataset.syncing;
       if (offline) group.node.dataset.offline = "";
       else delete group.node.dataset.offline;
       const count = machine.projects.reduce(
@@ -362,6 +371,17 @@ class SessionNavigation {
         "aria-label",
         `${count} ${count === 1 ? "session" : "sessions"}`,
       );
+      // Rows on their way are not "0 sessions".
+      group.count.hidden = count === 0 && syncing && !offline;
+      setText(
+        group.emptyText,
+        offline
+          ? "No sessions reported."
+          : syncing
+            ? "Syncing sessions…"
+            : "No live sessions.",
+      );
+      group.emptyHint.hidden = syncing || offline;
       const projectNames = new Set<string>();
       const projects: HTMLElement[] = [];
       for (const project of machine.projects) {
@@ -667,11 +687,18 @@ class Workspace {
         label,
         this.#tree.length === 0 ? "Pair a machine" : "New session",
       );
+    // No rows yet while a machine's list is on its way: not "0 sessions".
+    const syncing =
+      count === 0 &&
+      this.#tree.some((machine) => machine.syncing && !machine.offline);
+    const machines = `${this.#tree.length} ${this.#tree.length === 1 ? "machine" : "machines"}`;
     setText(
       this.#landingMeta,
-      this.#tree.length > 0
-        ? `${count} ${count === 1 ? "session" : "sessions"} · ${this.#tree.length} ${this.#tree.length === 1 ? "machine" : "machines"}`
-        : "Passkey access · End-to-end encrypted",
+      this.#tree.length === 0
+        ? "Passkey access · End-to-end encrypted"
+        : syncing
+          ? `Syncing sessions · ${machines}`
+          : `${count} ${count === 1 ? "session" : "sessions"} · ${machines}`,
     );
   }
 

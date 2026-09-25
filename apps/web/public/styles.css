@@ -553,11 +553,11 @@ legend {
 .machine-offline:not([hidden]) ~ .machine-count {
   margin-left: 0;
 }
-/* The cached rows stay fully usable; the fade only hints they may change. */
+/* Rows awaiting a live snapshot stay fully usable; the fade only hints they may change. */
 .machine-projects {
   transition: opacity 0.2s ease;
 }
-.machine-group[data-stale] .machine-projects {
+.machine-group[data-syncing] .machine-projects {
   opacity: 0.86;
 }
 /* An offline machine's last known sessions stay open to read, dimmed. */
@@ -717,6 +717,10 @@ legend {
   padding: 16px 6px 4px;
   font-size: 14px;
   line-height: 1.65;
+}
+.machine-empty-hint {
+  margin-top: 4px;
+  font-size: 13px;
 }
 .rail-footer {
   display: grid;
