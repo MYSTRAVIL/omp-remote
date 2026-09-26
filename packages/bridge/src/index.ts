@@ -166,7 +166,7 @@ const ASK_PARAMETERS = {
         properties: {
           id: { type: "string" },
           question: { type: "string" },
-          options: { type: "array" },
+          options: { type: "array", items: { type: "string" } },
           multi: { type: "boolean" },
           recommended: { type: "number" },
         },
