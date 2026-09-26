@@ -37,6 +37,30 @@ test("a second issue invalidates the first token and keeps joinedAt", async () =
   expect(store.list()[0]?.joinedAt).toBe(1_000);
 });
 
+test("a renewal authenticates beside the current token, survives a reload, and replaces it only when adopted; a newer renewal voids an unused one", async () => {
+  const path = await tempStorePath();
+  const store = await MachineStore.load(path);
+  const current = await store.issue("m1", 1_000);
+  const other = await store.issue("m2", 1_000);
+  const voided = await store.renew("m1");
+  const renewal = await store.renew("m1");
+  expect(store.authenticate(voided)).toBeUndefined();
+  expect(store.authenticate(renewal)).toBe("m1");
+
+  const reloaded = await MachineStore.load(path);
+  expect(reloaded.authenticate(current)).toBe("m1");
+  expect(reloaded.authenticate(renewal)).toBe("m1");
+  // Only m1's own renewal is adopted: not its current token, nor for m2.
+  expect(await reloaded.adopt("m1", current)).toBe(false);
+  expect(await reloaded.adopt("m2", renewal)).toBe(false);
+  expect(await reloaded.adopt("m1", renewal)).toBe(true);
+  expect(reloaded.authenticate(current)).toBeUndefined();
+  expect(reloaded.authenticate(renewal)).toBe("m1");
+  expect(await reloaded.adopt("m1", renewal)).toBe(false);
+  expect(reloaded.authenticate(other)).toBe("m2");
+  await expect(reloaded.renew("nobody")).rejects.toThrow();
+});
+
 test("revoke invalidates the token; revoking an unknown machine is false", async () => {
   const store = await MachineStore.load(await tempStorePath());
   const token = await store.issue("m1", 1_000);

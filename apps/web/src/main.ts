@@ -1,3 +1,5 @@
+// First: it configures Zod before any schema below is built.
+import "./zod-jitless";
 import { notifyKey } from "@omp-remote/crypto";
 import type { ControlFrame, DownlinkFrame } from "@omp-remote/protocol";
 /// <reference lib="dom" />

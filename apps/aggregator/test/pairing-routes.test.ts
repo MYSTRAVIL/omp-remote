@@ -220,7 +220,7 @@ async function pairOnce(
   return { claim, result, agentToken, poll };
 }
 
-test("a re-pair that presents the machine's current token replaces it and closes the old token's socket", async () => {
+test("a re-pair that presents the machine's current token leaves it working until the new token first dials /agent, which retires it and closes its socket", async () => {
   const http = await start();
   const first = (await pairOnce(http, "mach-1")).agentToken ?? "";
   const old = dialAgent(http.replace(/^http/, "ws"), first);
@@ -234,12 +234,19 @@ test("a re-pair that presents the machine's current token replaces it and closes
 
   const { claim, agentToken: second } = await pairOnce(http, "mach-1", first);
   expect(claim.status).toBe(200);
-  expect(machines.authenticate(first)).toBeUndefined();
-  expect(machines.authenticate(second ?? "")).toBe("mach-1");
+  // Claimed, but the host has not dialled with it: a claim the host goes on
+  // to reject (a bad phone MAC, a code mismatch) costs the machine nothing.
+  expect(await agentOpens(http, first)).toBe(true);
+  expect(old.readyState).toBe(WebSocket.OPEN);
+
+  expect(await agentOpens(http, second ?? "")).toBe(true);
   expect(await closed.promise).toEqual({
     code: 4403,
     reason: "token replaced",
   });
+  expect(machines.authenticate(first)).toBeUndefined();
+  expect(await agentOpens(http, first)).toBe(false);
+  expect(machines.authenticate(second ?? "")).toBe("mach-1");
 });
 
 test("a claim that would replace an existing machine's token without its current bearer is a 409, and the host learns it was refused, once", async () => {

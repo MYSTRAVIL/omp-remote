@@ -5,14 +5,22 @@ import { z } from "zod";
 import { writeFileAtomic } from "./atomic-write";
 
 /**
- * A machine allowed to dial `/agent`: its id, the hash of the one token that
- * authenticates it, and when it joined and was last seen (epoch ms). The
- * plaintext token is never stored.
+ * A machine allowed to dial `/agent`: its id, the hash of the token that
+ * authenticates it (and of a renewal not yet used, if any), and when it joined
+ * and was last seen (epoch ms). The plaintext token is never stored.
  */
 export const MachineRecord = z.object({
   machineId: MachineId,
   /** base64url SHA-256 of the machine's token: 32 bytes, 43 characters. */
   tokenHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  /**
+   * base64url SHA-256 of a re-pair's token that has not dialled `/agent` yet.
+   * It authenticates beside `tokenHash`, which it replaces on first use.
+   */
+  renewalHash: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{43}$/)
+    .optional(),
   joinedAt: z.number().int(),
   lastSeenAt: z.number().int().optional(),
 });
@@ -83,10 +91,10 @@ export class MachineStore {
   }
 
   /**
-   * Mint a fresh 32-byte token for `machineId`, replacing any earlier one (which
-   * stops authenticating at once), and persist. Resolves to the plaintext
-   * token, the only time it exists outside the machine that holds it. A
-   * re-issue keeps the machine's `joinedAt`.
+   * Mint a fresh 32-byte token for `machineId`, replacing any earlier one and
+   * any pending renewal (which stop authenticating at once), and persist.
+   * Resolves to the plaintext token, the only time it exists outside the
+   * machine that holds it. A re-issue keeps the machine's `joinedAt`.
    */
   async issue(machineId: string, now: number): Promise<string> {
     const id = MachineId.parse(machineId);
@@ -99,22 +107,62 @@ export class MachineStore {
         tokenHash: hash,
         joinedAt: now,
       });
-    else existing.tokenHash = hash;
+    else {
+      existing.tokenHash = hash;
+      existing.renewalHash = undefined;
+    }
     await this.#persist();
     return token;
   }
 
   /**
-   * The machineId `token` is bound to, or undefined. The presented token's
-   * hash is compared against every machine's in constant time, with no early
-   * exit, so the answer's timing says nothing about which (if any) matched.
+   * Mint a renewal token for existing `machineId` and persist its hash beside
+   * the current token's. Both authenticate until the renewal's first use
+   * retires the current one (see {@link adopt}), so a re-pair its host never
+   * completes leaves the machine's token working. A newer renewal voids an
+   * unused one. Resolves to the plaintext token; rejects for an unknown machine.
+   */
+  async renew(machineId: string): Promise<string> {
+    const machine = this.#data.machines.find((m) => m.machineId === machineId);
+    if (machine === undefined) throw new Error(`unknown machine ${machineId}`);
+    const token = randomBytes(TOKEN_BYTES).toString("base64url");
+    machine.renewalHash = tokenHash(token).toString("base64url");
+    await this.#persist();
+    return token;
+  }
+
+  /**
+   * If `token` is `machineId`'s pending renewal, make it the machine's only
+   * token — the one it renewed stops authenticating — and persist. Resolves to
+   * whether it was; any other token changes nothing.
+   */
+  async adopt(machineId: string, token: string): Promise<boolean> {
+    const machine = this.#data.machines.find((m) => m.machineId === machineId);
+    const renewal = machine?.renewalHash;
+    if (machine === undefined || renewal === undefined) return false;
+    if (!timingSafeEqual(Buffer.from(renewal, "base64url"), tokenHash(token)))
+      return false;
+    machine.tokenHash = renewal;
+    machine.renewalHash = undefined;
+    await this.#persist();
+    return true;
+  }
+
+  /**
+   * The machineId `token` is bound to, as its token or its pending renewal, or
+   * undefined. The presented token's hash is compared against every stored
+   * hash in constant time, with no early exit, so the answer's timing says
+   * nothing about which (if any) matched.
    */
   authenticate(token: string): string | undefined {
     const presented = tokenHash(token);
     let bound: string | undefined;
     for (const machine of this.#data.machines) {
-      const stored = Buffer.from(machine.tokenHash, "base64url");
-      if (timingSafeEqual(stored, presented)) bound = machine.machineId;
+      for (const hash of [machine.tokenHash, machine.renewalHash]) {
+        if (hash === undefined) continue;
+        if (timingSafeEqual(Buffer.from(hash, "base64url"), presented))
+          bound = machine.machineId;
+      }
     }
     return bound;
   }

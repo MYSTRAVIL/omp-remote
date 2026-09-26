@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { resolve } from "node:path";
 import { type Config, loadConfig, secretPaths } from "@omp-remote/config";
-import { PairingStore } from "@omp-remote/crypto";
+import { PairingStore } from "@omp-remote/crypto/pairing-store";
 import {
   checkOwnerOnly,
   ipcPath,
@@ -186,6 +186,8 @@ export function doctorChecks(cfg: Config): Check[] {
             : `cannot reach ${base} → start the server, or check agent.serverUrl`,
         );
       },
+      // pairing.json holds this host's long-term secret key.
+      secretCheck("pairing keys", secretPaths.pairing, "omp-remote pair"),
       async () => {
         const store = new PairingStore(secretPaths.pairing);
         try {

@@ -1,5 +1,6 @@
 import { type Config, secretPaths } from "@omp-remote/config";
-import { PairingStore, notifyKey, serverSessionKeys } from "@omp-remote/crypto";
+import { notifyKey, serverSessionKeys } from "@omp-remote/crypto";
+import { PairingStore } from "@omp-remote/crypto/pairing-store";
 import {
   IpcEndpointInUseError,
   type SecretOptions,
@@ -118,7 +119,7 @@ export async function startAgent(cfg: Config): Promise<RunningAgent> {
         code: "agent-token-not-found",
       });
     } else {
-      const store = new PairingStore(secretPaths.pairing);
+      const store = new PairingStore(secretPaths.pairing, secretOptions);
       await store.load();
       const phone = agent.phoneId
         ? store.peer(agent.phoneId)

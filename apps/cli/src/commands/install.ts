@@ -24,7 +24,7 @@ import {
   windowsFileBytes,
   windowsServicePaths,
 } from "../service/windows";
-import { reachableUrls } from "../urls";
+import { labelledPhoneUrl, phoneUrls } from "../urls";
 
 const cliEntry = fileURLToPath(new URL("../main.ts", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -254,19 +254,14 @@ export async function install(opts: InstallOptions = {}): Promise<void> {
     );
 
   if (cfg.server) {
-    const port = cfg.server.listen.port;
-    const urls = cfg.server.publicUrl
-      ? [cfg.server.publicUrl]
-      : [
-          ...reachableUrls(
-            networkInterfaces(),
-            port,
-            await defaultRouteAddress(),
-          ).map((u) => u.url),
-          `http://localhost:${port}`,
-        ];
     console.log("Open omp-remote at:");
-    for (const url of urls) console.log(`  ${url}`);
+    for (const url of phoneUrls(
+      cfg.server,
+      cfg.server.listen.port,
+      networkInterfaces(),
+      await defaultRouteAddress(),
+    ))
+      console.log(`  ${labelledPhoneUrl(url)}`);
   }
   console.log(`Service output (pairing code and QR included): ${output}`);
   if (process.platform === "linux")

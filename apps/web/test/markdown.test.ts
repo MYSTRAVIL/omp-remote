@@ -48,6 +48,18 @@ test("a javascript: link never becomes an anchor", () => {
   expect(host.textContent).toContain("x");
 });
 
+test("a link that would open a pairing prompt never becomes an anchor: relative, absolute, or autolinked", () => {
+  const host = render(
+    "[a](#pair=abc) [b](/#pair=abc) [c](https://relay.example/#pair=abc) https://relay.example/#PAIR=abc",
+  );
+  expect(host.querySelector("a")).toBeNull();
+  expect(host.textContent).toContain("https://relay.example/#PAIR=abc");
+  // Other fragments still link.
+  expect(render("[d](#section)").querySelector("a")?.getAttribute("href")).toBe(
+    "#section",
+  );
+});
+
 test("a safe link becomes an anchor with a hardened rel/target", () => {
   const host = render("[docs](https://example.com)");
   const a = host.querySelector("a");

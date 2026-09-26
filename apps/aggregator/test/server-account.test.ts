@@ -69,7 +69,12 @@ interface Gated extends GatePaths {
  * sign-in).
  */
 async function startGated(
-  opts: { paths?: GatePaths; now?: () => number; machines?: MachineStore } = {},
+  opts: {
+    paths?: GatePaths;
+    now?: () => number;
+    machines?: MachineStore;
+    clientRecheckMs?: number;
+  } = {},
 ): Promise<Gated> {
   let paths = opts.paths;
   if (paths === undefined) {
@@ -89,6 +94,7 @@ async function startGated(
     machines: opts.machines ?? machines,
     port: 0,
     auth: new WebAuthnGate({ ...CFG, passwordPath }, store, opts.now),
+    clientRecheckMs: opts.clientRecheckMs,
   });
   server.start();
   const port = server.boundPort;
@@ -1099,6 +1105,35 @@ test("a password session issued before the password is set again stops opening /
   expect(await clientAccess(g, await signIn(g, "a whole new password"))).toBe(
     "live",
   );
+});
+
+test("an open /client socket closes 4401 'signed out' once its token expires; a longer-lived one stays", async () => {
+  let clock = 1_700_000_000_000;
+  const g = await startGated({ now: () => clock, clientRecheckMs: 5 });
+  const short = await openClient(g, await signIn(g));
+  const remembered = await call(g, "POST", "/auth/login/password", {
+    body: { password: PASSWORD, remember: true },
+  });
+  const long = await openClient(g, (await remembered.json()).token);
+
+  const closed = closeOf(short);
+  clock += CFG.sessionTtlSec * 1000;
+  expect(await closed).toEqual({ code: 4401, reason: "signed out" });
+  expect(await ping(long)).toBe("pong");
+});
+
+test("a password set from outside the relay closes open password-session /client sockets 4401 'signed out'; passkey sessions stay", async () => {
+  let clock = 1_700_000_000_000;
+  const g = await startGated({ now: () => clock, clientRecheckMs: 5 });
+  const a = await enroll(g);
+  const passwordSocket = await openClient(g, await signIn(g));
+  const passkeySocket = await openClient(g, await login(g, a));
+
+  const closed = closeOf(passwordSocket);
+  clock += 1_000;
+  await writeCheapPassword(g.passwordPath, "a whole new password", clock);
+  expect(await closed).toEqual({ code: 4401, reason: "signed out" });
+  expect(await ping(passkeySocket)).toBe("pong");
 });
 
 test("turning password sign-in off takes a passkey session: from a password session it is a 403; from a passkey session with one passkey and a step-up for exactly that, a 200", async () => {

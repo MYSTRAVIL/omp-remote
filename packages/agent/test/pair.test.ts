@@ -2,12 +2,8 @@ import { expect, test } from "bun:test";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  PairingStore,
-  newIdentity,
-  pairingSas,
-  phoneCommitment,
-} from "@omp-remote/crypto";
+import { newIdentity, pairingSas, phoneCommitment } from "@omp-remote/crypto";
+import { PairingStore } from "@omp-remote/crypto/pairing-store";
 import { PairingBroker } from "../../../apps/aggregator/src/pairing";
 import { AggregatorServer } from "../../../apps/aggregator/src/server";
 import { tempMachineStore } from "../../../apps/aggregator/test/helpers/machines";

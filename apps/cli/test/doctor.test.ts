@@ -1,9 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Config, secretPaths } from "@omp-remote/config";
-import { PairingStore, newIdentity } from "@omp-remote/crypto";
+import { newIdentity } from "@omp-remote/crypto";
+import { PairingStore } from "@omp-remote/crypto/pairing-store";
 import { restrictToOwner } from "@omp-remote/protocol/ipc";
 import { startAgent } from "../../../packages/agent/src/main";
 import { MachineStore } from "../../aggregator/src/machine-store";
@@ -127,6 +135,21 @@ test("a secret other accounts can read fails and names the fix", async () => {
     process.platform === "win32"
       ? "→ omp-remote install re-applies owner-only access"
       : `→ chmod 600 ${secretPaths.sessionSecret}`,
+  );
+});
+
+test("a pairing store other accounts can read fails: it holds the host's secret key", async () => {
+  const { cfg } = await healthyStack();
+  const store = await readFile(secretPaths.pairing, "utf8");
+  await rm(secretPaths.pairing);
+  await writeFile(secretPaths.pairing, store);
+  if (process.platform !== "win32") await chmod(secretPaths.pairing, 0o644);
+  const { code, lines } = await runDoctor(cfg);
+  expect(code).toBe(1);
+  expect(lines.find((l) => l.startsWith("FAIL pairing keys"))).toEndWith(
+    process.platform === "win32"
+      ? "→ omp-remote install re-applies owner-only access"
+      : `→ chmod 600 ${secretPaths.pairing}`,
   );
 });
 

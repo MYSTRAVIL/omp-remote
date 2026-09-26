@@ -1,11 +1,11 @@
 import { writeFileAtomic } from "@omp-remote/config";
 import {
-  type PairingStore,
   hostCommitment,
   newPairingCode,
   pairingSas,
   verifyPeerMac,
 } from "@omp-remote/crypto";
+import type { PairingStore } from "@omp-remote/crypto/pairing-store";
 import { PairHostResponse, PairResultResponse } from "@omp-remote/protocol";
 import { readSecret } from "@omp-remote/protocol/ipc";
 

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { NetworkInterfaceInfo } from "node:os";
-import { pairLink, reachableUrls } from "../src/urls";
+import { pairLink, phoneUrls, reachableUrls } from "../src/urls";
 
 function v4(address: string, internal = false): NetworkInterfaceInfo {
   return {
@@ -97,4 +97,29 @@ test("pairLink puts the code in the fragment", () => {
   expect(pairLink("http://box:8788/", "AB12-CD34")).toBe(
     "http://box:8788/#pair=AB12-CD34",
   );
+});
+
+// The app runs in local dev mode on a loopback origin, so a loopback URL is
+// listed only when there is nothing else to open.
+test("phoneUrls leaves out loopback when any other URL reaches the server", () => {
+  const lan = { eth0: [v4("192.168.1.20")] };
+  expect(phoneUrls({ listen: { host: "0.0.0.0" } }, 8788, lan)).toEqual([
+    { url: "http://192.168.1.20:8788", kind: "lan" },
+  ]);
+  expect(
+    phoneUrls(
+      { listen: { host: "127.0.0.1" }, publicUrl: "https://omp.example/" },
+      8788,
+      lan,
+    ),
+  ).toEqual([{ url: "https://omp.example", kind: "public" }]);
+});
+
+test("phoneUrls falls back to loopback when nothing else reaches the server", () => {
+  expect(phoneUrls({ listen: { host: "127.0.0.1" } }, 8788, {})).toEqual([
+    { url: "http://127.0.0.1:8788", kind: "local" },
+  ]);
+  expect(phoneUrls({ listen: { host: "0.0.0.0" } }, 8788, {})).toEqual([
+    { url: "http://127.0.0.1:8788", kind: "local" },
+  ]);
 });

@@ -1,6 +1,6 @@
 {
   "name": "@omp-remote/agent",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "dependencies": {
     "@omp-remote/config": "workspace:*",

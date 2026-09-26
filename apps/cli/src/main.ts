@@ -8,6 +8,7 @@ import { pair } from "./commands/pair";
 import { passwd } from "./commands/passwd";
 import { run } from "./commands/run";
 import { type CliDeps, processDeps } from "./deps";
+import { autoloadedEnvFiles } from "./dotenv-guard";
 
 /** A command: its arguments after the command name in, an exit code out. */
 type Command = (args: string[], deps: CliDeps) => Promise<number>;
@@ -102,5 +103,15 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
   }
 }
 
-if (import.meta.main)
+if (import.meta.main) {
+  // Bun loads these before any code runs, and omp-remote cannot tell their
+  // values from the shell's: refuse rather than act on an untrusted folder's.
+  const envFiles = autoloadedEnvFiles(process.cwd(), process.execArgv);
+  if (envFiles.length > 0) {
+    processDeps.printError(
+      `omp-remote: Bun loaded ${envFiles.join(", ")} into the environment, and omp-remote takes no settings from .env files. Run it from another folder, or as bun --no-env-file ${import.meta.path} …`,
+    );
+    process.exit(1);
+  }
   process.exit(await main(process.argv.slice(2), processDeps));
+}

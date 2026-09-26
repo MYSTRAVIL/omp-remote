@@ -44,6 +44,12 @@ export interface AggregatorConfig {
   /** Idle seconds before Bun closes a silent socket (keepalive window). */
   idleTimeoutSec?: number;
   /**
+   * How often (ms) open `/client` sockets are rechecked: one whose token has
+   * expired, or whose session is signed out by a change made outside this
+   * process (the password set again), is closed 4401. Default 30 s.
+   */
+  clientRecheckMs?: number;
+  /**
    * Access gate: password sign-in, and passkeys when it has a `publicUrl`.
    * When present, `/client` requires a valid session token (`?token=`) and the
    * `/auth/*` HTTP endpoints are served. When absent, `/client` is open (local
@@ -86,8 +92,9 @@ export interface SocketData {
   port: WsPort | undefined;
   /**
    * For a client whose token was authentic: the session it carried, checked
-   * for revocation on open and again whenever a revoke, sign-out-everywhere,
-   * or password sign-in change lands.
+   * for revocation on open, again whenever a revoke, sign-out-everywhere, or
+   * password sign-in change lands, and for expiry or a password change at
+   * every recheck (`clientRecheckMs`).
    */
   readonly session?: SessionTokenPayload;
   /**
@@ -112,6 +119,8 @@ export interface SocketData {
  */
 const DEFAULT_MAX_BUFFERED = 16 << 20; // 16 MiB
 const DEFAULT_IDLE_TIMEOUT_SEC = 120;
+/** Default `clientRecheckMs`: the phone's own keepalive period. */
+const DEFAULT_CLIENT_RECHECK_MS = 30_000;
 /**
  * Largest HTTP request body the server reads; over it Bun answers 413 unread.
  * Every body it accepts is small JSON — a pairing request, a password, a
@@ -226,6 +235,7 @@ export class AggregatorServer {
   /** Open `/agent` sockets, each with the machineId its token is bound to. */
   readonly #agentSockets = new Map<ServerWebSocket<SocketData>, string>();
   #http: Server<SocketData> | undefined;
+  #clientRecheck: Timer | undefined;
   #nextId = 0;
 
   constructor(cfg: AggregatorConfig) {
@@ -259,9 +269,15 @@ export class AggregatorServer {
       revoke: (machineId) => self.#revokeMachine(machineId),
     };
     const trustProxy = this.#cfg.trustProxy ?? false;
-    // A re-pair replaced the machine's token: the sockets its old one opened go.
+    // A re-pair's token dialled for the first time and replaced the machine's
+    // old one: the sockets the old token opened go.
     const closeReplaced = (machineId: string): void =>
       self.#closeAgents(machineId, REPLACED_REASON);
+    if (this.#cfg.auth !== undefined)
+      this.#clientRecheck = setInterval(
+        () => void self.#closeEndedClients(),
+        this.#cfg.clientRecheckMs ?? DEFAULT_CLIENT_RECHECK_MS,
+      );
     this.#http = Bun.serve<SocketData>({
       hostname: this.#cfg.hostname ?? "127.0.0.1",
       port: this.#cfg.port,
@@ -301,7 +317,6 @@ export class AggregatorServer {
               req.headers,
               trustProxy,
             ),
-            closeReplaced,
           );
         const collab = self.#collab;
         if (collab) {
@@ -358,6 +373,21 @@ export class AggregatorServer {
             : { endpoint: "client", subject: session?.sub };
         if (peer === undefined)
           return new Response("unauthorized", { status: 401 });
+        if (peer.endpoint === "agent") {
+          let adopted: boolean;
+          try {
+            adopted = await self.#cfg.machines.adopt(
+              peer.machineId,
+              bearerOf(req) ?? "",
+            );
+          } catch (err) {
+            console.error(
+              `omp-remote pairing: adopting a renewed token failed: ${String(err)}`,
+            );
+            return new Response("service unavailable", { status: 503 });
+          }
+          if (adopted) closeReplaced(peer.machineId);
+        }
         if (
           server.upgrade(req, {
             data: { endpoint, port: undefined, peer, session, signedOut },
@@ -451,6 +481,8 @@ export class AggregatorServer {
   }
 
   stop(): void {
+    clearInterval(this.#clientRecheck);
+    this.#clientRecheck = undefined;
     this.#http?.stop(true);
     this.#http = undefined;
     this.#clientSessions.clear();
@@ -467,6 +499,22 @@ export class AggregatorServer {
     for (const [ws, session] of this.#clientSessions) {
       if (!auth.isRevoked(session)) continue;
       this.#clientSessions.delete(ws);
+      ws.close(SIGNED_OUT_CODE, SIGNED_OUT_REASON);
+    }
+  }
+
+  /**
+   * Close (4401 "signed out") every open `/client` socket whose session has
+   * ended since it opened: its token expired, or it was signed out by a change
+   * this process did not make (see `WebAuthnGate.hasEnded`).
+   */
+  async #closeEndedClients(): Promise<void> {
+    const auth = this.#cfg.auth;
+    if (auth === undefined) return;
+    for (const [ws, session] of [...this.#clientSessions]) {
+      if (!(await auth.hasEnded(session))) continue;
+      // Closed meanwhile, by its peer or by a revoke that landed during the await.
+      if (!this.#clientSessions.delete(ws)) continue;
       ws.close(SIGNED_OUT_CODE, SIGNED_OUT_REASON);
     }
   }
@@ -1073,11 +1121,13 @@ async function handlePushRequest(
  * machine's current token as `Authorization: Bearer` registers a renewal.
  * `/pair/claim` is gated by the session token when the auth gate is on; a
  * claim issues the machine's token, which the host collects with its result.
- * Only a renewal may replace the token of a machine that exists — anything
- * else is a 409 `{ error: "machine-exists", machineId }`, and the host's next
- * `/pair/result` is `{ status: "refused", reason: "machine-exists" }` — and a
- * replaced token's open `/agent` sockets are closed (`closeReplaced`). A bad
- * JSON body is a 400, never a throw.
+ * Only a renewal may claim a machine that exists — anything else is a 409
+ * `{ error: "machine-exists", machineId }`, and the host's next `/pair/result`
+ * is `{ status: "refused", reason: "machine-exists" }`. A renewal's token only
+ * joins the machine's current one (`MachineStore.renew`): the current token
+ * keeps working, and is replaced (its open `/agent` sockets closed,
+ * `closeReplaced`) only when the host, having verified the phone, first dials
+ * with the new one. A bad JSON body is a 400, never a throw.
  */
 async function handlePairRequest(
   broker: PairingBroker,
@@ -1086,7 +1136,6 @@ async function handlePairRequest(
   pathname: string,
   req: Request,
   client: string | undefined,
-  closeReplaced: (machineId: string) => void,
 ): Promise<Response> {
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
   switch (pathname) {
@@ -1130,7 +1179,11 @@ async function handlePairRequest(
       }
       let agentToken: string;
       try {
-        agentToken = await machines.issue(machineId, Date.now());
+        // A renewal adds a token beside the machine's current one; only the
+        // host's first dial with it retires the current one (see `adopt`).
+        agentToken = exists
+          ? await machines.renew(machineId)
+          : await machines.issue(machineId, Date.now());
       } catch (err) {
         // No token, no pairing: the host's poll finds nothing and times out.
         broker.drop(rendezvousId);
@@ -1139,7 +1192,6 @@ async function handlePairRequest(
         );
         return json({ error: "internal error" }, 500);
       }
-      if (exists) closeReplaced(machineId);
       broker.grant(rendezvousId, agentToken);
       return json(claimed.response);
     }

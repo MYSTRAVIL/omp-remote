@@ -6,7 +6,8 @@ import {
   saveConfig,
   secretPaths,
 } from "@omp-remote/config";
-import { PairingStore, newPairingCode } from "@omp-remote/crypto";
+import { newPairingCode } from "@omp-remote/crypto";
+import { PairingStore } from "@omp-remote/crypto/pairing-store";
 import { readSecret } from "@omp-remote/protocol/ipc";
 import type { CliDeps } from "../deps";
 import { renderQr } from "../qr";
@@ -97,7 +98,12 @@ export async function pairPhone(
       fetch: deps.fetch,
       machineId: target.machineId,
       agentTokenPath: secretPaths.agentToken,
-      store: new PairingStore(secretPaths.pairing),
+      store: new PairingStore(secretPaths.pairing, {
+        onAclFailure: (failure) =>
+          deps.print(
+            `warning: could not restrict pairing.json to this account (${failure}); omp-remote doctor checks it`,
+          ),
+      }),
       renew: target.renew,
       newCode: async () => {
         code = await newPairingCode();

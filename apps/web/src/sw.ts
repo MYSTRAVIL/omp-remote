@@ -1,5 +1,7 @@
 /// <reference lib="webworker" />
 
+// First: it configures Zod before any schema below is built.
+import "./zod-jitless";
 import {
   SHELL_CACHE_PREFIX,
   readNotifyKeys,

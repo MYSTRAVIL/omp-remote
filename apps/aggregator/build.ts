@@ -38,7 +38,16 @@ await mkdir(dist, { recursive: true });
 
 async function compile(target: string | undefined): Promise<void> {
   const outfile = join(dist, target ? `${name}-${target}` : name);
-  const args = ["build", "--compile", entry, "--outfile", outfile];
+  // The binary takes no settings from a .env or bunfig.toml in its cwd.
+  const args = [
+    "build",
+    "--compile",
+    "--no-compile-autoload-dotenv",
+    "--no-compile-autoload-bunfig",
+    entry,
+    "--outfile",
+    outfile,
+  ];
   if (target !== undefined) args.push(`--target=${target}`);
   const proc = Bun.spawn(["bun", ...args], {
     stdout: "inherit",

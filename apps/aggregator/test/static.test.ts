@@ -43,6 +43,25 @@ test("the shell and service worker are never cached", async () => {
     expect((await get(path))?.headers.get("cache-control")).toBe("no-cache");
 });
 
+test("every response carries the CSP, frame-ancestors and nosniff", async () => {
+  for (const path of ["/", "/main.js", "/sw.js", "/missing.js", "/../x.txt"]) {
+    const res = await get(path);
+    expect(res?.headers.get("x-content-type-options")).toBe("nosniff");
+    const csp = new Map(
+      (res?.headers.get("content-security-policy") ?? "")
+        .split(";")
+        .map((d) => d.trim().split(/\s+/))
+        .map(([name = "", ...sources]) => [name, sources]),
+    );
+    expect(csp.get("default-src")).toEqual(["'self'"]);
+    expect(csp.get("frame-ancestors")).toEqual(["'none'"]);
+    // No inline or eval'd script: only the libsodium wasm compile is allowed.
+    expect(csp.get("script-src")).toEqual(["'self'", "'wasm-unsafe-eval'"]);
+    expect(csp.get("object-src")).toEqual(["'none'"]);
+    expect(csp.get("base-uri")).toEqual(["'none'"]);
+  }
+});
+
 test("a missing asset is a 404, not the shell", async () => {
   expect((await get("/missing.js"))?.status).toBe(404);
 });

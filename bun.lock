@@ -16,7 +16,7 @@
     },
     "apps/aggregator": {
       "name": "@omp-remote/aggregator",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "dependencies": {
         "@omp-remote/config": "workspace:*",
         "@omp-remote/protocol": "workspace:*",
@@ -29,7 +29,7 @@
     },
     "apps/cli": {
       "name": "@omp-remote/cli",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "bin": {
         "omp-remote": "src/main.ts",
       },
@@ -45,7 +45,7 @@
     },
     "apps/web": {
       "name": "@omp-remote/web",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "dependencies": {
         "@noble/hashes": "^2.4.0",
         "@omp-remote/crypto": "workspace:*",
@@ -61,7 +61,7 @@
     },
     "packages/agent": {
       "name": "@omp-remote/agent",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "dependencies": {
         "@oh-my-pi/pi-wire": "18.3.1",
         "@omp-remote/config": "workspace:*",
@@ -72,7 +72,7 @@
     },
     "packages/bridge": {
       "name": "@omp-remote/bridge",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "dependencies": {
         "@omp-remote/protocol": "workspace:*",
       },
@@ -82,7 +82,7 @@
     },
     "packages/config": {
       "name": "@omp-remote/config",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "dependencies": {
         "@omp-remote/protocol": "workspace:*",
         "zod": "^4",
@@ -90,8 +90,9 @@
     },
     "packages/crypto": {
       "name": "@omp-remote/crypto",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "dependencies": {
+        "@omp-remote/config": "workspace:*",
         "@omp-remote/protocol": "workspace:*",
         "libsodium-wrappers": "^0.8.4",
         "zod": "^4",
@@ -99,7 +100,7 @@
     },
     "packages/protocol": {
       "name": "@omp-remote/protocol",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "dependencies": {
         "zod": "^4.0.0",
       },

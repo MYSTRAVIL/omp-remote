@@ -11,6 +11,9 @@
     "baseUrl": ".",
     "paths": {
       "@omp-remote/protocol/ipc": ["packages/protocol/src/ipc.ts"],
+      "@omp-remote/crypto/pairing-store": [
+        "packages/crypto/src/pairing-store.ts"
+      ],
       "@omp-remote/*": ["packages/*/src"]
     }
   },

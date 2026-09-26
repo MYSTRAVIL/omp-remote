@@ -74,6 +74,21 @@ export interface PhoneUrl {
   kind: "public" | ReachableUrl["kind"] | "local";
 }
 
+const PHONE_URL_LABELS: Record<PhoneUrl["kind"], string> = {
+  public: "public",
+  tailnet: "tailnet",
+  lan: "LAN",
+  virtual: "VM/container adapter",
+  // The app treats a loopback origin as local dev mode: no sign-in, and it
+  // talks to the host-agent's dev client instead of this server.
+  local: "this machine only; the app opens in local dev mode here",
+};
+
+/** `url  (label)`, the line `run` and `install` print for a phone URL. */
+export function labelledPhoneUrl({ url, kind }: PhoneUrl): string {
+  return `${url}  (${PHONE_URL_LABELS[kind]})`;
+}
+
 /** A listen host that accepts connections on every interface. */
 function listensEverywhere(host: string): boolean {
   return host === "0.0.0.0" || host === "::" || host === "";
@@ -95,9 +110,10 @@ export function localServerUrl(host: string, port: number): string {
 
 /**
  * The URLs a phone can open to reach a server listening on `listen.host` at
- * `port`, best first: the public HTTPS origin when there is one; every LAN and
- * tailnet address when it listens everywhere, or the one address it binds; and
- * the loopback URL a browser on this machine uses. Never empty.
+ * `port`, best first: the public HTTPS origin when there is one, then every
+ * LAN and tailnet address when it listens everywhere, or the one address it
+ * binds. The loopback URL comes only when nothing else reaches the server: the
+ * app runs in local dev mode on a loopback origin. Never empty.
  */
 export function phoneUrls(
   server: { listen: { host: string }; publicUrl?: string },
@@ -118,7 +134,7 @@ export function phoneUrls(
       url: `http://${urlHost(host)}:${port}`,
       kind: isTailnet(host) ? "tailnet" : "lan",
     });
-  if (everywhere || loopback)
+  if (urls.length === 0)
     urls.push({ url: localServerUrl(host, port), kind: "local" });
   return urls;
 }

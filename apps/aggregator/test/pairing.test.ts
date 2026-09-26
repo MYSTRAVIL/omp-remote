@@ -119,16 +119,23 @@ test("TTL: once now reaches expiresAt, claim and result treat the pairing as gon
   expect(broker.result(RESULT)).toEqual({ status: "pending" });
 });
 
-test("maxPending: a new rendezvous past the cap throws, overwriting an existing one does not", () => {
+test("maxPending: past the cap a new rendezvous displaces the oldest unclaimed one, and throws when only claimed ones are held; overwriting is not growth", () => {
   const broker = new PairingBroker({ now: clock().now, maxPending: 2 });
+  const claimable = (rendezvousId: string): boolean =>
+    broker.claim({ ...CLAIM, rendezvousId }) !== undefined;
   broker.registerHost({ ...HOST, rendezvousId: "rv-a" });
   broker.registerHost({ ...HOST, rendezvousId: "rv-b" });
-  expect(() => broker.registerHost({ ...HOST, rendezvousId: "rv-c" })).toThrow(
+  broker.registerHost({ ...HOST, rendezvousId: "rv-c" }); // displaces rv-a
+  expect(claimable("rv-a")).toBe(false);
+  expect(claimable("rv-b")).toBe(true);
+  expect(claimable("rv-c")).toBe(true);
+  // Both held pairings are claimed, their tokens awaiting their hosts.
+  expect(() => broker.registerHost({ ...HOST, rendezvousId: "rv-d" })).toThrow(
     PairingBrokerError,
   );
   // Re-registering a rendezvous already in the map is an overwrite, not growth.
   expect(() =>
-    broker.registerHost({ ...HOST, rendezvousId: "rv-a" }),
+    broker.registerHost({ ...HOST, rendezvousId: "rv-b" }),
   ).not.toThrow();
 });
 
@@ -191,20 +198,30 @@ test("a client at its cap displaces its own oldest unclaimed pairing, never anot
   expect(claimable("victim")).toBe(true);
 });
 
-test("with every slot held, an addressed client takes its own oldest slot; one with none of its own, or no address, is refused", () => {
+test("with every slot held, a registration displaces the oldest unclaimed pairing of the client holding the most — never another's lone one, a claimed one, or a renewal", () => {
   const broker = new PairingBroker({
     now: clock().now,
-    maxPending: 3,
+    maxPending: 6,
     maxPendingPerClient: 4,
   });
-  const host = (rendezvousId: string, client: string | undefined) =>
-    broker.registerHost({ ...HOST, rendezvousId }, { client, renews: false });
+  const host = (
+    rendezvousId: string,
+    client: string | undefined,
+    renews = false,
+  ) => broker.registerHost({ ...HOST, rendezvousId }, { client, renews });
+  const claimable = (rendezvousId: string): boolean =>
+    broker.claim({ ...CLAIM, rendezvousId }) !== undefined;
   host("a1", "198.51.100.7");
+  host("r1", undefined, true); // a renewal: the host holds the machine's token
   host("b1", "203.0.113.9");
   host("b2", "203.0.113.9");
-  expect(() => host("c1", "192.0.2.1")).toThrow(PairingBrokerError);
-  expect(() => host("n1", undefined)).toThrow(PairingBrokerError);
-  host("b3", "203.0.113.9"); // gives up b1
-  expect(broker.claim({ ...CLAIM, rendezvousId: "b1" })).toBeUndefined();
-  expect(broker.claim({ ...CLAIM, rendezvousId: "a1" })).toBeDefined();
+  host("b3", "203.0.113.9");
+  host("n1", undefined); // every slot is held now
+  host("c1", "192.0.2.1"); // displaces b1: 203.0.113.9 holds the most
+  host("n2", undefined); // displaces b2
+  // The no-address share (n1, n2; the renewal never gives way) is largest now.
+  host("n3", undefined); // displaces n1
+  for (const gone of ["b1", "b2", "n1"]) expect(claimable(gone)).toBe(false);
+  for (const kept of ["a1", "r1", "b3", "c1", "n2", "n3"])
+    expect(claimable(kept)).toBe(true);
 });

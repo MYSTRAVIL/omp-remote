@@ -8,10 +8,20 @@
 import { type MarkedToken, type Token, marked } from "marked";
 
 const SAFE_SCHEME = /^(?:https?:|mailto:)/i;
+/**
+ * A `#pair=<code>` fragment opens this app's pairing prompt (see
+ * `core/pair.ts`). Transcript text can quote anything, so such a link never
+ * becomes one tap away from enrolling a stranger's machine.
+ */
+const PAIR_FRAGMENT = /#pair=/i;
 
-/** A vetted href (safe scheme or same-document path), or undefined to drop the link. */
+/**
+ * A vetted href (safe scheme or same-document path, never a pairing link), or
+ * undefined to drop the link.
+ */
 function safeHref(href: string): string | undefined {
   const target = href.trim();
+  if (PAIR_FRAGMENT.test(target)) return undefined;
   if (
     SAFE_SCHEME.test(target) ||
     target.startsWith("/") ||

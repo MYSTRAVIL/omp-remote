@@ -109,14 +109,19 @@ omp.example.com {
 ```
 
 The server rate-limits password attempts per client address, and also across
-all clients. With `trustProxy: true` it takes the client address from
-`X-Real-IP`, or from the last `X-Forwarded-For` hop, and only when the request
-comes from a loopback peer. It keys IPv6 clients by their /64 prefix. Without
-`trustProxy`, a loopback peer carries no client address, so every attempt
-through the proxy counts against one shared limit. A lockout then applies to
-everyone, which is safer than an open brute force. Never set `trustProxy`
-behind a proxy that forwards the client's own `X-Real-IP`: each request could
-then choose its own address and dodge the per-client limit.
+all clients. Each address gets five free tries, then waits 1, 2, 4 … seconds
+(up to 15 minutes) after each failure. Across all clients, 20 failures in a
+burst make everyone wait, and that shared budget drains one failure every 30
+seconds, so it clears on its own once guessing stops. With `trustProxy: true`
+the server takes the client address from `X-Real-IP`, or from the last
+`X-Forwarded-For` hop, and only when the request comes from a loopback peer.
+It keys IPv6 clients by their /64 prefix. Without `trustProxy`, a loopback
+peer carries no client address, so every attempt through the proxy spends
+only the shared budget. Someone who keeps guessing at its rate (two a minute)
+can keep password sign-in busy for everyone for as long as they keep it up;
+passkey sign-in is not affected. Never set `trustProxy` behind a proxy that
+forwards the client's own `X-Real-IP`: each request could then choose its own
+address and dodge the per-client limit.
 
 ## 4. Start at boot
 

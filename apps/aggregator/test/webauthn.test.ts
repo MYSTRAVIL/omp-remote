@@ -365,7 +365,7 @@ test("one client's login flood gives way only to itself: its own oldest logins a
   expect(newest.verified).toBe(true);
 });
 
-test("with every slot held, a client with no login pending is refused rather than evicting anyone; one with its own evicts only its own", async () => {
+test("with every slot held, a newcomer displaces the oldest login of the client holding the most, never another's lone login", async () => {
   const { gate } = await freshGate();
   const auth = new VirtualAuthenticator(RP_ID, ORIGIN);
   await registerNew(gate, auth);
@@ -373,22 +373,15 @@ test("with every slot held, a client with no login pending is refused rather tha
   await floodLogins(gate, MAX_PENDING_CEREMONIES - 1);
   expect(gate.pendingCeremonies).toBe(MAX_PENDING_CEREMONIES);
 
-  expect(await gate.authenticationOptions("192.0.2.200")).toBeUndefined();
+  const newcomer = await loginOptions(gate, "192.0.2.200");
   expect(gate.pendingCeremonies).toBe(MAX_PENDING_CEREMONIES);
-  // The owner's pending login survived the refusal...
-  const again = await loginOptions(gate, "198.51.100.7");
-  expect(gate.pendingCeremonies).toBe(MAX_PENDING_CEREMONIES);
-  // ...and its own newer one is what took its place.
-  const replaced = await gate.verifyAuthentication(
-    owner.flowId,
-    auth.authenticate(owner.options),
-  );
-  expect(replaced.verified).toBe(false);
-  const kept = await gate.verifyAuthentication(
-    again.flowId,
-    auth.authenticate(again.options),
-  );
-  expect(kept.verified).toBe(true);
+  for (const flow of [owner, newcomer]) {
+    const res = await gate.verifyAuthentication(
+      flow.flowId,
+      auth.authenticate(flow.options),
+    );
+    expect(res.verified).toBe(true);
+  }
 });
 
 test("logins never cancel an enrolment or a step-up; a gated ceremony takes the oldest login's slot, and is refused when only gated ones are held", async () => {
@@ -536,26 +529,25 @@ test("a step-up authorizes only the action, target, and session it was minted fo
   expect(store.get(idB)).toBeUndefined();
 });
 
-test("logins with no usable client address share only the global cap: once full they are refused, and nothing — not a login, enrolment, or step-up — evicts one", async () => {
+test("logins with no usable client address count as one client: once every slot is held, each new login, enrolment or step-up displaces the oldest of them", async () => {
   const { gate } = await freshGate();
   const auth = new VirtualAuthenticator(RP_ID, ORIGIN);
   await registerNew(gate, auth);
   const session = await loginSession(gate, auth);
-  const first = await gate.authenticationOptions(undefined);
-  if (first === undefined) throw new Error("login options refused");
-  for (let i = 1; i < MAX_PENDING_CEREMONIES; i++)
+  for (let i = 0; i < MAX_PENDING_CEREMONIES; i++)
     expect(await gate.authenticationOptions(undefined)).toBeDefined();
 
-  expect(await gate.authenticationOptions(undefined)).toBeUndefined();
-  expect(await gate.authenticationOptions("198.51.100.7")).toBeUndefined();
-  expect(await gate.stepUpOptions(SIGN_OUT, session)).toBeUndefined();
-  expect(await gate.registrationOptions(await ownerRequest(gate))).toEqual({
-    ok: false,
-    reason: "busy",
-  });
+  const latest = await gate.authenticationOptions(undefined);
+  if (latest === undefined) throw new Error("login options refused");
+  expect(await gate.authenticationOptions("198.51.100.7")).toBeDefined();
+  expect(await gate.stepUpOptions(SIGN_OUT, session)).toBeDefined();
+  expect((await gate.registrationOptions(await ownerRequest(gate))).ok).toBe(
+    true,
+  );
+  expect(gate.pendingCeremonies).toBe(MAX_PENDING_CEREMONIES);
   const res = await gate.verifyAuthentication(
-    first.flowId,
-    auth.authenticate(first.options),
+    latest.flowId,
+    auth.authenticate(latest.options),
   );
   expect(res.verified).toBe(true);
 });

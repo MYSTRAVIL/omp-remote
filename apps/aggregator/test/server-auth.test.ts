@@ -277,11 +277,22 @@ test("without a publicUrl the passkey routes are not served, and a password sign
   ).toBe("open");
 });
 
-test("POST /auth/login/password: the right password opens /client; a wrong one is a uniform 401; the sixth failure in a row is a 429 with retryAfterSec", async () => {
+test("POST /auth/login/password: the right password opens /client; a wrong one is a uniform 401; a client's sixth failure in a row is a 429 with retryAfterSec", async () => {
   let clock = 1_700_000_000_000;
-  const { base, http } = await startGated({ now: () => clock });
+  // Behind a trusted proxy, so each try carries a client address to throttle.
+  const { base, http } = await startGated({
+    now: () => clock,
+    trustProxy: true,
+  });
   const login = (password: string, remember?: boolean) =>
-    post(http, "/auth/login/password", { password, remember });
+    fetch(`${http}/auth/login/password`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-real-ip": "198.51.100.7",
+      },
+      body: JSON.stringify({ password, remember }),
+    });
 
   const res = await login(PASSWORD);
   expect(res.status).toBe(200);
@@ -330,11 +341,12 @@ test("a password guesser cannot dodge the throttle by sending a fresh X-Real-IP 
       },
       body: JSON.stringify({ password: `${PASSWORD}x` }),
     });
-  // Untrusted proxy (the default): every guess keys on the loopback peer.
+  // Untrusted proxy (the default): the headers are ignored and the loopback
+  // peer is no client identity, so every guess spends the one global budget.
   const untrusted = await startGated({ now: () => clock });
-  for (let i = 0; i < 5; i++)
+  for (let i = 0; i < 20; i++)
     expect((await guess(untrusted.http, i)).status).toBe(401);
-  expect((await guess(untrusted.http, 5)).status).toBe(429);
+  expect((await guess(untrusted.http, 20)).status).toBe(429);
   server?.stop();
   // Trusted proxy: each address has its own five, but the global twenty cap them all.
   const trusted = await startGated({ now: () => clock, trustProxy: true });
@@ -436,7 +448,7 @@ function loginOptionsFrom(http: string, realIp: string): Promise<Response> {
   });
 }
 
-test("behind the loopback proxy, a login-options flood from one address never evicts another's login; a newcomer finding every slot held gets 429", async () => {
+test("behind the loopback proxy, a login-options flood from many addresses never evicts another's lone login, and a newcomer finding every slot held still gets one", async () => {
   const { http } = await startGated({ trustProxy: true });
   const auth = new VirtualAuthenticator(RP_ID, ORIGIN);
   await enroll(http, auth);
@@ -449,18 +461,19 @@ test("behind the loopback proxy, a login-options flood from one address never ev
     const from = `10.0.${Math.floor(i / MAX_PENDING_LOGINS_PER_CLIENT)}.1`;
     expect((await loginOptionsFrom(http, from)).status).toBe(200);
   }
-  const refused = await loginOptionsFrom(http, "192.0.2.200");
-  expect(refused.status).toBe(429);
-  expect(await refused.json()).toEqual({ error: "busy" });
+  const newcomer = await loginOptionsFrom(http, "192.0.2.200");
+  expect(newcomer.status).toBe(200);
 
-  const res = await post(http, "/auth/login/verify", {
-    flowId: owner.flowId,
-    response: auth.authenticate(owner.options),
-  });
-  expect(res.status).toBe(200);
+  for (const flow of [owner, await newcomer.json()]) {
+    const res = await post(http, "/auth/login/verify", {
+      flowId: flow.flowId,
+      response: auth.authenticate(flow.options),
+    });
+    expect(res.status).toBe(200);
+  }
 });
 
-test("when every request resolves to 127.0.0.1 (a proxy hiding the client), a login-options flood is refused with 429 and the first pending login still verifies", async () => {
+test("when every request resolves to 127.0.0.1 (a proxy hiding the client), a login-options flood cannot refuse the next login: each displaces the oldest", async () => {
   const { http } = await startGated({ trustProxy: true });
   const auth = new VirtualAuthenticator(RP_ID, ORIGIN);
   await enroll(http, auth);
@@ -473,18 +486,15 @@ test("when every request resolves to 127.0.0.1 (a proxy hiding the client), a lo
         "x-forwarded-for": "127.0.0.1",
       },
     });
-  const owner = await (await hidden()).json();
-  for (let i = 1; i < MAX_PENDING_CEREMONIES; i++)
+  for (let i = 0; i < MAX_PENDING_CEREMONIES; i++)
     expect((await hidden()).status).toBe(200);
-  for (let i = 0; i < 2 * MAX_PENDING_LOGINS_PER_CLIENT; i++) {
-    const refused = await hidden();
-    expect(refused.status).toBe(429);
-    expect(await refused.json()).toEqual({ error: "busy" });
-  }
+  const latest = await hidden();
+  expect(latest.status).toBe(200);
+  const flow = await latest.json();
 
   const res = await post(http, "/auth/login/verify", {
-    flowId: owner.flowId,
-    response: auth.authenticate(owner.options),
+    flowId: flow.flowId,
+    response: auth.authenticate(flow.options),
   });
   expect(res.status).toBe(200);
 });

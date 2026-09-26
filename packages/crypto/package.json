@@ -1,9 +1,14 @@
 {
   "name": "@omp-remote/crypto",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./pairing-store": "./src/pairing-store.ts"
+  },
   "dependencies": {
+    "@omp-remote/config": "workspace:*",
     "@omp-remote/protocol": "workspace:*",
     "libsodium-wrappers": "^0.8.4",
     "zod": "^4"

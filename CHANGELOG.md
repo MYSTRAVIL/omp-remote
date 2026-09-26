@@ -5,6 +5,8 @@ All notable changes to omp-remote are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-25
+
 ### Added
 
 - Local-network hosting. One home machine runs the server and its agent in one
@@ -116,9 +118,28 @@ All notable changes to omp-remote are documented here. The format follows
 - A machine with no live sessions explains that only omp sessions started
   after the bridge was installed show there, and points to New session › Past
   sessions (#4).
+- `omp-remote install` lists the same labelled URLs as `run` instead of a
+  `localhost` URL, which the app opens in local dev mode and cannot sign in
+  on. Both list a loopback URL only when nothing else reaches the server, and
+  label it as opening in dev mode.
 
 ### Security
 
+- The `omp-remote` CLI refuses to start when Bun has loaded a `.env` file from
+  the working directory, so a checkout's `.env` cannot move the state dir or
+  change proxy or TLS settings. The root `omp-remote` script runs Bun with
+  `--no-env-file`, and the compiled server binary no longer autoloads `.env`
+  or `bunfig.toml`.
+- `pairing.json`, which holds the host's long-term secret key, is written
+  atomically and owner-only on Windows too, like the other secrets. `doctor`
+  checks its permissions. A `pairing.json` that exists but cannot be read or
+  parsed now stops the agent instead of being replaced with a new identity.
+- The server sends a Content-Security-Policy with the phone app: scripts,
+  styles and fonts only from the app's own files (no inline script or `eval`;
+  libsodium may compile its wasm), images also from `data:` and `blob:`,
+  connections to the server and WebSockets, and `frame-ancestors 'none'`.
+  Every app response also carries `X-Content-Type-Options: nosniff`. The app
+  turns off Zod's `eval` probe so it runs cleanly under that policy.
 - Adding a passkey requires a signed-in session and a fresh check, and is
   capped at 20 credentials. Login uses discoverable credentials, so login
   options no longer disclose credential IDs.
@@ -139,3 +160,34 @@ All notable changes to omp-remote are documented here. The format follows
   phone binds its commands to the agent epoch it verified in a handshake, and
   each side refuses counters it has already seen. The phone PWA and the
   host-agent must be updated together: neither accepts the old envelope.
+- Open phone sockets end when their sign-in does. The aggregator rechecks every
+  open `/client` socket every 30 seconds and closes it (4401, so the phone
+  signs out) once its token has expired, or once the password was changed with
+  `omp-remote passwd` for a password session. Before, such a socket stayed
+  attached until it dropped.
+- One client can no longer lock password sign-in and password step-ups for
+  everyone. The failure budget shared by all clients used to grow until a
+  correct password reset it, so about 21 wrong passwords, then one each time
+  the lock lifted, kept everyone out. It now drains one failure every 30
+  seconds, so its lock lasts seconds and clears once guessing stops. Long
+  lockouts apply only to the guessing client's own address. Tries with no
+  client address (behind a proxy that is not trusted) spend only the shared
+  budget.
+- A flood of login options or pairing registrations can no longer lock others
+  out of passkey sign-in, passkey step-ups, enrolment or pairing. When every
+  pending slot is held, a new request now displaces the oldest pending login
+  or unclaimed pairing of whichever client holds the most, instead of being
+  refused. Requests with no client address (behind a proxy that is not
+  trusted) count as one client. Enrolments, step-ups, claimed pairings and
+  renewals by a host holding its machine token never give way.
+- A re-pair no longer replaces a machine's token when the phone claims it. The
+  new token works beside the old one, and replaces it (closing the old token's
+  `/agent` sockets) only when the host, having verified the phone, first dials
+  with it. A claim the host rejects, or one made by someone who learned the
+  rendezvous id, no longer knocks the machine offline.
+- A pairing link (`#pair=`) quoted in a transcript renders as plain text, so one
+  tap on model or tool output can no longer open the pairing prompt. `SECURITY.md`
+  now lists the pairing and session-token limits that remain, with mitigations.
+
+[Unreleased]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/MYSTRAVIL/omp-remote/releases/tag/v0.1.0

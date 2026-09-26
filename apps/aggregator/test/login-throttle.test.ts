@@ -3,7 +3,12 @@ import { LoginThrottle } from "../src/login-throttle";
 
 const T0 = 1_700_000_000_000;
 
-function failTimes(t: LoginThrottle, key: string, n: number, at = T0): void {
+function failTimes(
+  t: LoginThrottle,
+  key: string | undefined,
+  n: number,
+  at = T0,
+): void {
   for (let i = 0; i < n; i++) t.fail(key, at);
 }
 
@@ -87,10 +92,42 @@ test("every failure counts against a global budget that locks every key", () => 
   for (let i = 0; i < 20; i++) t.fail(`k${i}`, T0);
   expect(t.check("anyone", T0)).toEqual({ ok: true });
   t.fail("k20", T0);
-  expect(t.check("anyone", T0)).toEqual({ ok: false, retryAfterSec: 1 });
-  expect(t.check("k0", T0 + 1_000)).toEqual({ ok: true });
+  expect(t.check("anyone", T0)).toEqual({ ok: false, retryAfterSec: 30 });
   // The owner's success clears it.
   t.fail("k21", T0);
   t.succeed("owner");
   expect(t.check("anyone", T0)).toEqual({ ok: true });
+});
+
+test("the global budget drains one failure per 30 s: a burst locks everyone for seconds, and it lifts with no success", () => {
+  const t = new LoginThrottle();
+  for (let i = 0; i < 22; i++) t.fail(`k${i}`, T0);
+  expect(t.check("owner", T0)).toEqual({ ok: false, retryAfterSec: 60 });
+  expect(t.check("owner", T0 + 30_000)).toEqual({
+    ok: false,
+    retryAfterSec: 30,
+  });
+  expect(t.check("owner", T0 + 60_000)).toEqual({ ok: true });
+});
+
+test("one client failing whenever it may, all day, never locks another client out", () => {
+  const t = new LoginThrottle();
+  let ownerLocked = 0;
+  for (let s = 0; s < 86_400; s++) {
+    const now = T0 + s * 1_000;
+    if (t.check("attacker", now).ok) t.fail("attacker", now);
+    if (!t.check("owner", now).ok) ownerLocked += 1;
+  }
+  expect(t.check("attacker", T0 + 86_400_000).ok).toBe(false);
+  expect(ownerLocked).toBe(0);
+});
+
+test("tries with no client key count only against the global budget, which drains", () => {
+  const t = new LoginThrottle();
+  failTimes(t, undefined, 20);
+  expect(t.check(undefined, T0)).toEqual({ ok: true });
+  t.fail(undefined, T0);
+  expect(t.check(undefined, T0)).toEqual({ ok: false, retryAfterSec: 30 });
+  expect(t.check("198.51.100.7", T0).ok).toBe(false);
+  expect(t.check(undefined, T0 + 30_000)).toEqual({ ok: true });
 });

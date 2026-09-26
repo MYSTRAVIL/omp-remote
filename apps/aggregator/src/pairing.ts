@@ -7,6 +7,7 @@ import type {
   PairResultRequest,
   PairResultResponse,
 } from "@omp-remote/protocol";
+import { oldestOfLargestShare } from "./largest-share";
 
 /** Raised by {@link PairingBroker.registerHost} when no pending slot can be made. */
 export class PairingBrokerError extends Error {}
@@ -103,11 +104,12 @@ export class PairingBroker {
   /**
    * Register (or overwrite) a host's pending pairing under its `rendezvousId`,
    * resetting the TTL and the claim state. A client address at
-   * `maxPendingPerClient`, or finding every slot held, gives up its own
-   * oldest pending pairing; one with nothing of its own to give up (or no
-   * usable address) and every slot held is refused with
-   * {@link PairingBrokerError}. So a flood from one address only ever
-   * displaces its own pairings, never anyone else's.
+   * `maxPendingPerClient` gives up its own oldest unclaimed pairing. With
+   * every slot held, the client holding the most unclaimed pairings gives up
+   * its oldest (registrations with no usable address count as one client),
+   * so a flood displaces its own pairings long before anyone else's lone one;
+   * a claimed pairing or a renewal never gives way. With nothing left to give
+   * up it is refused with {@link PairingBrokerError}.
    */
   registerHost(
     req: PairHostRequest,
@@ -222,25 +224,43 @@ export class PairingBroker {
 
   /**
    * Make a slot for a registration from `client`, or report there is none.
-   * From a known address it may displace only that address's own oldest
-   * unclaimed pairing — never a claimed one, whose token is already issued
-   * and waiting for its host: when the address is at `maxPendingPerClient`,
-   * or every slot is held. With no usable address there is no share to count
-   * against: it takes a free slot or is refused.
+   * From a known address at `maxPendingPerClient` it displaces that
+   * address's own oldest unclaimed pairing — never a claimed one, whose
+   * token is already issued and waiting for its host — and is refused if it
+   * has none. With every slot held it displaces the oldest unclaimed,
+   * non-renewing pairing of the client holding the most of them.
    */
   #makeRoom(client: string | undefined): boolean {
-    const full = this.#pending.size >= this.#maxPending;
-    if (client === undefined) return !full;
-    let oldestOwn: string | undefined;
-    let own = 0;
-    for (const [rendezvousId, pending] of this.#pending) {
-      if (pending.client !== client) continue;
-      own += 1;
-      if (!pending.claimed) oldestOwn ??= rendezvousId;
+    if (client !== undefined) {
+      let oldestOwn: string | undefined;
+      let own = 0;
+      for (const [rendezvousId, pending] of this.#pending) {
+        if (pending.client !== client) continue;
+        own += 1;
+        if (!pending.claimed) oldestOwn ??= rendezvousId;
+      }
+      if (own >= this.#maxPendingPerClient) {
+        if (oldestOwn === undefined) return false;
+        this.#pending.delete(oldestOwn);
+        return true;
+      }
     }
-    if (!full && own < this.#maxPendingPerClient) return true;
-    if (oldestOwn === undefined) return false;
-    this.#pending.delete(oldestOwn);
+    if (this.#pending.size < this.#maxPending) return true;
+    const displaced = oldestOfLargestShare(displaceable(this.#pending));
+    if (displaced === undefined) return false;
+    this.#pending.delete(displaced);
     return true;
   }
+}
+
+/**
+ * Each pending pairing that may give way — unclaimed, and not a renewal by a
+ * host holding the machine's token — with the client address it came from,
+ * oldest first.
+ */
+function* displaceable(
+  pending: ReadonlyMap<string, Pending>,
+): Generator<[string, string | undefined]> {
+  for (const [rendezvousId, entry] of pending)
+    if (!entry.claimed && !entry.renews) yield [rendezvousId, entry.client];
 }

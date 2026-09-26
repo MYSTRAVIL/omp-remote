@@ -12,7 +12,7 @@ import {
 } from "@omp-remote/aggregator/src/main";
 import { configPath, loadConfig } from "@omp-remote/config";
 import type { CliDeps } from "../deps";
-import { type PhoneUrl, phoneUrls } from "../urls";
+import { labelledPhoneUrl, phoneUrls } from "../urls";
 import {
   type PairTarget,
   agentServerUrl,
@@ -24,14 +24,6 @@ import {
 
 /** apps/web/build.ts writes the PWA into the `dist/` beside it. */
 const WEB_BUILD_SCRIPT = join(DEFAULT_WEB_ROOT, "..", "build.ts");
-
-const URL_LABELS: Record<PhoneUrl["kind"], string> = {
-  public: "public",
-  tailnet: "tailnet",
-  lan: "LAN",
-  virtual: "VM/container adapter",
-  local: "this machine only",
-};
 
 /**
  * Make sure the PWA the server serves is built. The checkout's own build (the
@@ -110,13 +102,13 @@ export async function run(args: string[], deps: CliDeps): Promise<number> {
       deps.print(
         `omp-remote server on port ${server.port}. Open it on your phone:`,
       );
-      for (const { url, kind } of phoneUrls(
+      for (const url of phoneUrls(
         loaded.server,
         server.port,
         deps.networkInterfaces(),
         await deps.defaultRouteAddress(),
       ))
-        deps.print(`  ${url}  (${URL_LABELS[kind]})`);
+        deps.print(`  ${labelledPhoneUrl(url)}`);
     }
     if (loaded.agent !== undefined) {
       let cfg = { ...loaded, agent: loaded.agent };

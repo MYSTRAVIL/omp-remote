@@ -9,6 +9,7 @@ import {
 } from "@simplewebauthn/server";
 import { z } from "zod";
 import { CredentialStore, type StoredCredential } from "./credential-store";
+import { oldestOfLargestShare } from "./largest-share";
 import { LoginThrottle } from "./login-throttle";
 import { type PasswordFile, readPassword } from "./password";
 import {
@@ -170,12 +171,6 @@ export const MAX_PENDING_CEREMONIES = 256;
  * leaves room for a household behind one NAT.
  */
 export const MAX_PENDING_LOGINS_PER_CLIENT = 16;
-/**
- * The password-throttle key of every request with no usable client address:
- * behind a proxy that hides clients they share it, so the limit turns global —
- * a lockout there beats an open brute force. No address can equal it.
- */
-const ANY_CLIENT = "(no client address)";
 
 /** Where passkey ceremonies run: the RP ID and the origin a ceremony must come from. */
 interface RelyingParty {
@@ -526,14 +521,23 @@ export class WebAuthnGate {
    * {@link isRevoked}), or a password session no longer backed by the password
    * — none is set, or the one set was set after the session was issued
    * (`iat * 1000 < setAt`). Changing the password so signs out every password
-   * session; an open socket learns it only when it next dials, since a
-   * password is changed outside this process.
+   * session; since a password is changed outside this process, an open socket
+   * learns it only at the server's next recheck (see {@link hasEnded}).
    */
   async isSignedOut(session: SessionTokenPayload): Promise<boolean> {
     if (this.isRevoked(session)) return true;
     if (session.m !== "pw") return false;
     const password = await this.#password();
     return password === undefined || session.iat * 1000 < password.setAt;
+  }
+
+  /**
+   * Whether an open socket's session has ended: its token expired at the
+   * gate's clock, or it is signed out now (see {@link isSignedOut}).
+   */
+  async hasEnded(session: SessionTokenPayload): Promise<boolean> {
+    if (Math.floor(this.#now() / 1000) >= session.exp) return true;
+    return this.isSignedOut(session);
   }
 
   /**
@@ -794,31 +798,32 @@ export class WebAuthnGate {
   }
 
   /**
-   * Check `password` against the password file for the client at `client`.
-   * A locked-out client is refused without a check. Otherwise the try counts
-   * as a failure before the (slow) check runs — so concurrent guesses cannot
-   * outrun the throttle — and a match clears the client's count. A failure
-   * that starts a lockout is reported as the lockout.
+   * Check `password` against the password file for the client at `client`
+   * (undefined: no usable address, so only the global budget applies — see
+   * {@link LoginThrottle}). A locked-out client is refused without a check.
+   * Otherwise the try counts as a failure before the (slow) check runs — so
+   * concurrent guesses cannot outrun the throttle — and a match clears the
+   * client's count. A failure that starts a lockout is reported as the
+   * lockout.
    */
   async #checkPassword(
     password: string,
     client: string | undefined,
   ): Promise<{ ok: true } | PasswordRefusal> {
-    const key = client ?? ANY_CLIENT;
     const now = this.#now();
-    const allowed = this.#throttle.check(key, now);
+    const allowed = this.#throttle.check(client, now);
     if (!allowed.ok)
       return {
         ok: false,
         reason: "throttled",
         retryAfterSec: allowed.retryAfterSec,
       };
-    this.#throttle.fail(key, now);
+    this.#throttle.fail(client, now);
     if (await this.#passwordMatches(password)) {
-      this.#throttle.succeed(key);
+      this.#throttle.succeed(client);
       return { ok: true };
     }
-    const locked = this.#throttle.check(key, now);
+    const locked = this.#throttle.check(client, now);
     return locked.ok
       ? { ok: false, reason: "wrong-password" }
       : { ok: false, reason: "throttled", retryAfterSec: locked.retryAfterSec };
@@ -879,23 +884,18 @@ export class WebAuthnGate {
 
   /**
    * Make a slot for `ceremony` within the caps, or report there is none. A
-   * login, the only kind an unauthenticated caller can start, never displaces
-   * anyone else's. From a known address it may displace only that address's
-   * own oldest pending login: when the address is at
-   * {@link MAX_PENDING_LOGINS_PER_CLIENT}, or every slot is held; with every
-   * slot held and none of its own to give up, it is refused. A login with no
-   * usable address (every request looks alike, as behind a proxy that hides
-   * the client) has no share to count against: it takes a free slot or is
-   * refused, and is never displaced by anything. So a flood can at worst
-   * refuse new logins until its own lapse — never cancel one under way. An
-   * enrolment or a step-up (both session-gated) takes the oldest addressed
-   * login's slot if every slot is held, and is refused otherwise: neither ever
-   * gives way.
+   * login from a known address at {@link MAX_PENDING_LOGINS_PER_CLIENT}
+   * displaces that address's own oldest pending login. Otherwise, with
+   * every slot held, any ceremony displaces the oldest pending login of the
+   * client holding the most (logins with no usable address — every request
+   * looks alike, as behind a proxy that hides the client — count as one
+   * client), so a flood gives way to everyone else rather than refusing them:
+   * it cancels its own logins long before another client's lone one. An
+   * enrolment or a step-up (both session-gated) never gives way; with only
+   * those held, a new ceremony is refused.
    */
   #makeRoom(ceremony: Ceremony): boolean {
-    const full = this.#pending.size >= MAX_PENDING_CEREMONIES;
-    if (ceremony.kind === "authenticate") {
-      if (ceremony.client === undefined) return !full;
+    if (ceremony.kind === "authenticate" && ceremony.client !== undefined) {
       let oldestOwn: string | undefined;
       let own = 0;
       for (const [flowId, pending] of this.#pending) {
@@ -907,19 +907,16 @@ export class WebAuthnGate {
         oldestOwn ??= flowId;
         own += 1;
       }
-      if (!full && own < MAX_PENDING_LOGINS_PER_CLIENT) return true;
-      if (oldestOwn === undefined) return false;
-      this.#pending.delete(oldestOwn);
-      return true;
+      if (oldestOwn !== undefined && own >= MAX_PENDING_LOGINS_PER_CLIENT) {
+        this.#pending.delete(oldestOwn);
+        return true;
+      }
     }
-    if (!full) return true;
-    for (const [flowId, pending] of this.#pending) {
-      if (pending.kind !== "authenticate" || pending.client === undefined)
-        continue;
-      this.#pending.delete(flowId);
-      return true;
-    }
-    return false;
+    if (this.#pending.size < MAX_PENDING_CEREMONIES) return true;
+    const displaced = oldestOfLargestShare(pendingLogins(this.#pending));
+    if (displaced === undefined) return false;
+    this.#pending.delete(displaced);
+    return true;
   }
 
   /** One-shot: take the ceremony pending under `flowId`, or undefined if unknown or expired. */
@@ -930,6 +927,14 @@ export class WebAuthnGate {
     if (this.#now() >= pending.expiresAt) return undefined;
     return pending;
   }
+}
+
+/** Each pending login's flowId and the client address it came from, oldest first. */
+function* pendingLogins(
+  pending: ReadonlyMap<string, PendingCeremony>,
+): Generator<[string, string | undefined]> {
+  for (const [flowId, ceremony] of pending)
+    if (ceremony.kind === "authenticate") yield [flowId, ceremony.client];
 }
 
 /** Whether a step-up minted for `minted` may authorize `requested`. */
