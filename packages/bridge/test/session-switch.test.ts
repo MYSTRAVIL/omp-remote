@@ -488,6 +488,40 @@ test("the feed finishes each reply's row, and a second reply in the same millise
   ]);
 });
 
+test("omp's trailing post-end update with the ended text opens no second row", async () => {
+  const ipc = await listen();
+  const omp = loadBridge("feed", ipc.path);
+  await omp.fire("session_start");
+  await ipc.next(helloFor("s1"));
+
+  // One streamed reply: a delta, then its end.
+  await omp.fire("message_update", assistantUpdate(7_000, text("Standing by")));
+  await omp.fire("message_end", {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [text("Standing by for your next task")],
+      timestamp: 7_000,
+    },
+  });
+  // omp then fires one more `message_update` carrying the final full
+  // snapshot. It must be swallowed, not turned into a second row.
+  await omp.fire(
+    "message_update",
+    assistantUpdate(7_000, text("Standing by for your next task")),
+  );
+  // The next turn gives the feed a real frame to settle on.
+  await omp.fire("message_update", assistantUpdate(9_000, text("Next")));
+  await ipc.next((s) => s.frame.t === "msg" && s.frame.text === "Next");
+
+  const sent = ipc.seen.flatMap((s) => (s.frame.t === "msg" ? [s.frame] : []));
+  expect(sent.map((m) => [m.phase, m.msgId, m.text])).toEqual([
+    ["start", "assistant-7000", "Standing by"],
+    ["end", "assistant-7000", "Standing by for your next task"],
+    ["start", "assistant-9000", "Next"],
+  ]);
+});
+
 test("the feed's tool cards carry a title and a body, and each end keeps them with the head of the output", async () => {
   const ipc = await listen();
   const omp = loadBridge("feed", ipc.path);

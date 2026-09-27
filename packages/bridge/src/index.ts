@@ -831,6 +831,10 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
   // history re-send uses, and a later message with the same millisecond gets
   // its own row. `streamed` is the reply row last sent and its text.
   const feedIds = new FeedMsgIds();
+  // Ended assistant rows by timestamp, so the bridge can tell omp's one
+  // trailing post-`message_end` snapshot (same text again) from a genuinely
+  // new reply that merely shares the millisecond.
+  const endedAssistant = new Map<string, { msgId: string; text: string }>();
   let streamed: { msgId: string; text: string } | undefined;
   // The images in `content` from the `from`-th on, under `anchor`: each its
   // init and chunks, or its init and the error the phone shows in its place.
@@ -860,8 +864,15 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     guard((event: MessageUpdateEvent) => {
       const message = event.message;
       if (message.role !== "assistant") return;
-      const msgId = feedIds.id("assistant", message.timestamp);
       const text = textOf(message.content);
+      // omp fires one trailing `message_update` after an assistant
+      // `message_end`, repeating the ended text (the final full snapshot);
+      // swallow that repeat so it cannot open occurrence 2. A genuine reply
+      // that shares the millisecond starts from different text and falls
+      // through to its own row.
+      const ended = endedAssistant.get(String(message.timestamp));
+      if (ended !== undefined && ended.text === text) return;
+      const msgId = feedIds.id("assistant", message.timestamp);
       // Thinking and tool-call deltas leave the text empty or unchanged; a
       // frame for each would only churn the sealed channel and the phone.
       const unchanged = streamed?.msgId === msgId && streamed.text === text;
@@ -893,6 +904,7 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
       if (message.role === "assistant") {
         const msgId = feedIds.end("assistant", message.timestamp);
         const text = textOf(message.content);
+        endedAssistant.set(String(message.timestamp), { msgId, text });
         if (text !== "" || streamed?.msgId === msgId)
           bridge?.emitMsg({ phase: "end", msgId, role: "assistant", text });
         return;
