@@ -2,7 +2,9 @@
 import { z } from "zod";
 import {
   type CacheStorageLike,
+  NOTIFY_DETAIL_DEFAULT,
   QUIET_WHILE_OPEN_DEFAULT,
+  saveNotifyDetail,
   saveQuietWhileOpen,
 } from "./sw-caches";
 
@@ -12,6 +14,9 @@ const STORAGE_KEY = "omp-remote.push.preferences";
 const StoredPush = z.object({
   enabled: z.boolean().catch(true),
   quietWhileOpen: z.boolean().catch(QUIET_WHILE_OPEN_DEFAULT),
+  notifyDetail: z
+    .enum(["private", "session", "preview"])
+    .catch(NOTIFY_DETAIL_DEFAULT),
 });
 type StoredPush = z.infer<typeof StoredPush>;
 
@@ -29,13 +34,16 @@ export class PushPreferences {
   readonly #caches: CacheStorageLike | undefined;
   /** The last copy for the service worker; each copy waits for the one before. */
   #copied = Promise.resolve();
+  #quietCopied = false;
+  #detailCopied = false;
 
   /** `caches`: where the service worker reads the quiet choice. */
   constructor(caches?: CacheStorageLike) {
     this.#caches = caches;
     this.#values = this.#stored();
     // A choice saved before the worker could read it reaches the worker now.
-    this.#copyForWorker();
+    this.#copyQuiet();
+    this.#copyDetail();
   }
 
   /** Push notifications are on for this device. */
@@ -46,6 +54,14 @@ export class PushPreferences {
   /** The service worker hides pushes while the app is on screen here. */
   get quietWhileOpen(): boolean {
     return this.#values.quietWhileOpen;
+  }
+
+  get notifyDetail(): "private" | "session" | "preview" {
+    return this.#values.notifyDetail;
+  }
+
+  setNotifyDetail(level: "private" | "session" | "preview"): boolean {
+    return this.#commit({ ...this.#stored(), notifyDetail: level });
   }
 
   setEnabled(on: boolean): boolean {
@@ -83,9 +99,16 @@ export class PushPreferences {
 
   /** Apply at once; false when storage is unavailable and the choice lasts only this page load. */
   #commit(values: StoredPush): boolean {
+    const oldQuiet = this.#values.quietWhileOpen;
+    const oldDetail = this.#values.notifyDetail;
     this.#values = values;
     for (const listener of this.#listeners) listener();
-    this.#copyForWorker();
+    if (values.quietWhileOpen !== oldQuiet) {
+      this.#copyQuiet();
+    }
+    if (values.notifyDetail !== oldDetail) {
+      this.#copyDetail();
+    }
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(values));
       return true;
@@ -94,18 +117,21 @@ export class PushPreferences {
     }
   }
 
-  /**
-   * Copy the quiet choice to where the service worker reads it. Copies run
-   * one at a time, each writing the choice as it stands when it runs, so the
-   * newest choice is the one left.
-   */
-  #copyForWorker(): void {
+  #copyQuiet(): void {
     const caches = this.#caches;
     if (caches === undefined) return;
-    this.#copied = this.#copied
-      .then(() => saveQuietWhileOpen(caches, this.#values.quietWhileOpen))
-      .catch(() => {
-        // Unwritable: the worker keeps the copy it has, or the default.
-      });
+    this.#quietCopied = true;
+    saveQuietWhileOpen(caches, this.#values.quietWhileOpen).catch(() => {
+      this.#quietCopied = false;
+    });
+  }
+
+  #copyDetail(): void {
+    const caches = this.#caches;
+    if (caches === undefined) return;
+    this.#detailCopied = true;
+    saveNotifyDetail(caches, this.#values.notifyDetail).catch(() => {
+      this.#detailCopied = false;
+    });
   }
 }

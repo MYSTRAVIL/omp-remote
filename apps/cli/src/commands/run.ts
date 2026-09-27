@@ -120,6 +120,9 @@ export async function run(args: string[], deps: CliDeps): Promise<number> {
             serverUrl,
             phoneUrl: await pairingPhoneUrl(cfg, deps, server?.port),
             renew: true,
+            serve: async (phonePub) => {
+              cfg = await servePhone(cfg, phonePub);
+            },
           },
           deps,
           stopRequested,
@@ -128,7 +131,6 @@ export async function run(args: string[], deps: CliDeps): Promise<number> {
           await stop();
           return 0;
         }
-        cfg = await servePhone(cfg, paired.phonePub);
       }
       agent = await startAgent({ ...cfg, agent: { ...cfg.agent, serverUrl } });
       deps.print(`Agent ${cfg.machineId} is connecting to ${serverUrl}.`);

@@ -1,7 +1,13 @@
 import { stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { resolve } from "node:path";
-import { type Config, loadConfig, secretPaths } from "@omp-remote/config";
+import { servedPhone } from "@omp-remote/agent/src/pair";
+import {
+  type Config,
+  configPath,
+  loadConfig,
+  secretPaths,
+} from "@omp-remote/config";
 import { PairingStore } from "@omp-remote/crypto/pairing-store";
 import {
   checkOwnerOnly,
@@ -13,8 +19,9 @@ import { bridgeInstallPath } from "../service/bridge";
 
 export interface CheckResult {
   name: string;
-  ok: boolean;
-  /** For a failure: what is wrong and how to fix it. */
+  /** `warn`: it works, but something is off; only `fail` fails doctor. */
+  status: "ok" | "warn" | "fail";
+  /** For a warning or failure: what is wrong and how to fix it. */
   detail?: string;
 }
 
@@ -69,10 +76,13 @@ async function sharedSecret(path: string): Promise<string | undefined> {
 }
 
 function pass(name: string): CheckResult {
-  return { name, ok: true };
+  return { name, status: "ok" };
+}
+function warn(name: string, detail: string): CheckResult {
+  return { name, status: "warn", detail };
 }
 function fail(name: string, detail: string): CheckResult {
-  return { name, ok: false, detail };
+  return { name, status: "fail", detail };
 }
 
 function secretCheck(name: string, path: string, fix: string): Check {
@@ -198,12 +208,23 @@ export function doctorChecks(cfg: Config): Check[] {
             `${secretPaths.pairing} is unreadable → omp-remote pair`,
           );
         }
-        return store.peers().length > 0
-          ? pass("paired phone")
-          : fail(
-              "paired phone",
-              "no phone is paired with this machine → omp-remote pair",
-            );
+        const served = servedPhone(store, agent.phoneId);
+        if (served === undefined)
+          return fail(
+            "paired phone",
+            "no phone is paired with this machine → omp-remote pair",
+          );
+        // The agent serves the newest trusted phone whatever the config says
+        // (`servedPhone`), but a config naming another one is off.
+        if (served.diverged === undefined) return pass("paired phone");
+        const named =
+          served.diverged === "phone-not-trusted"
+            ? `agent.phoneId names a phone ${secretPaths.pairing} does not trust`
+            : "agent.phoneId names a phone paired before the newest one";
+        return warn(
+          "paired phone",
+          `${named}; the agent serves the newest paired phone (${served.peer.id}) instead → set agent.phoneId to it in ${configPath()}, or pair again: omp-remote pair`,
+        );
       },
       async () =>
         (await exists(bridgeInstallPath()))
@@ -224,7 +245,8 @@ export function doctorChecks(cfg: Config): Check[] {
   return checks;
 }
 
-/** Run every check, print one line each, and return the exit code (1 on any failure). */
+/** Run every check, print one line each, and return the exit code (1 on any
+ *  failure; a warning alone still exits 0). */
 export async function doctor(
   opts: { load?: () => Promise<Config>; print?: (line: string) => void } = {},
 ): Promise<number> {
@@ -240,10 +262,12 @@ export async function doctor(
   let failed = false;
   for (const check of doctorChecks(cfg)) {
     const result = await check();
-    if (result.ok) print(`ok   ${result.name}`);
+    if (result.status === "ok") print(`ok   ${result.name}`);
     else {
-      failed = true;
-      print(`FAIL ${result.name}: ${result.detail ?? ""}`);
+      if (result.status === "fail") failed = true;
+      print(
+        `${result.status === "fail" ? "FAIL" : "WARN"} ${result.name}: ${result.detail ?? ""}`,
+      );
     }
   }
   return failed ? 1 : 0;

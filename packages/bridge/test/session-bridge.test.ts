@@ -873,6 +873,80 @@ test("the feed queue is bounded: overflow drops the oldest frames (drop-oldest)"
   bridge.stop();
 });
 
+test("every connect sends the backfill before the queued frames, asks pending questions again, then runs onConnected", async () => {
+  const sched = manualScheduler();
+  const conns = [new FakeConn(), new FakeConn()];
+  let calls = 0;
+  const bridge: SessionBridge = new SessionBridge({
+    token: "tok",
+    path: addr(),
+    meta,
+    connect: async () => {
+      const conn = conns[calls++];
+      if (!conn) throw new Error("agent down");
+      return conn;
+    },
+    scheduler: sched,
+    backfill: () => [
+      {
+        t: "msg",
+        sessionId: "s1",
+        phase: "end",
+        msgId: "user-1",
+        role: "user",
+        text: "earlier",
+        at: 1,
+      },
+    ],
+    onConnected: () => bridge.emitJobs({ running: [], recent: 0 }),
+  });
+
+  await bridge.start();
+  const first = bridge.raiseInteraction("q1", {
+    kind: "ask",
+    questions: [{ question: "Proceed?" }],
+  });
+  // The host-agent restarts: it forgets the session, questions and all.
+  conns[0]?.close();
+  bridge.emitMsg({
+    phase: "update",
+    msgId: "assistant-2",
+    role: "assistant",
+    text: "streaming on",
+  });
+  const second = bridge.raiseInteraction("q2", {
+    kind: "ask",
+    questions: [{ question: "And this?" }],
+  });
+  sched.fire();
+  await until(() => conns[1]?.frames.some((f) => f.t === "jobs") === true);
+
+  expect(
+    conns.map((conn) =>
+      conn.frames.map((f) =>
+        f.t === "msg"
+          ? `msg ${f.msgId}`
+          : f.t === "interaction"
+            ? `ask ${f.id}`
+            : f.t,
+      ),
+    ),
+  ).toEqual([
+    ["hello", "msg user-1", "jobs", "ask q1"],
+    ["hello", "msg user-1", "msg assistant-2", "ask q1", "ask q2", "jobs"],
+  ]);
+  // An answer on the new connection still settles the question asked before.
+  conns[1]?.fireFrame({
+    t: "interactionReply",
+    sessionId: "s1",
+    id: "q1",
+    response: { kind: "ask", answers: ["yes"] },
+  });
+  expect(await first).toEqual({ kind: "ask", answers: ["yes"] });
+  bridge.stop();
+  expect(await second).toBeUndefined();
+});
+
 test("raiseInteraction sends an interaction frame and resolves on the matching reply", async () => {
   const path = addr();
   server = new IpcServer({ token: "tok" });

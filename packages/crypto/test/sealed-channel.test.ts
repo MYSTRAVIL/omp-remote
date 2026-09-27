@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { type SealedFrame, SealedWireEnvelope } from "@omp-remote/protocol";
+import {
+  type SealedFrame,
+  SealedNotice,
+  type SealedRefusal,
+  SealedWireEnvelope,
+} from "@omp-remote/protocol";
 import {
   BlindRelay,
   type ByteSink,
@@ -53,30 +58,33 @@ class HandSink implements ByteSink {
   }
 }
 
-/** A channel on a hand-driven sink, with what it delivered, dropped and verified. */
+/** A channel on a hand-driven sink, with what it delivered, dropped, verified and was refused. */
 interface End {
   ch: SealedChannel;
   wire: HandSink;
   frames: SealedFrame[];
   rejects: SealedRejectReason[];
+  refusals: SealedRefusal[];
   ready: string[];
 }
 
 function end(
   keys: SessionKeys,
-  options: Omit<SealedChannelOptions, "onReject">,
+  options: Omit<SealedChannelOptions, "onReject" | "onRefused">,
 ): End {
   const wire = new HandSink();
   const rejects: SealedRejectReason[] = [];
+  const refusals: SealedRefusal[] = [];
   const ch = new SealedChannel(keys, wire, ROUTE, {
     ...options,
     onReject: (reason) => rejects.push(reason),
+    onRefused: (code) => refusals.push(code),
   });
   const frames: SealedFrame[] = [];
   const ready: string[] = [];
   ch.onFrame((f) => frames.push(f));
   ch.onReady((epoch) => ready.push(epoch));
-  return { ch, wire, frames, rejects, ready };
+  return { ch, wire, frames, rejects, refusals, ready };
 }
 
 /** Relay every line `from` wrote to each of `to`; returns the lines for replay. */
@@ -225,10 +233,96 @@ test("editing any clear header field makes the line fail authentication", async 
     "auth-failed",
   ]);
   expect(agent.frames).toEqual([]);
-  expect(agent.wire.take()).toEqual([]);
+  // No ack or hello goes back, only the clear notice each refused line draws
+  // to the epoch its header names: once per hello, so the edited binding,
+  // from a phone told since its last hello, draws none.
+  expect(
+    agent.wire.take().map((line) => SealedNotice.parse(JSON.parse(line))),
+  ).toEqual([
+    { route: ROUTE, k: "r", a: wire.e, code: "auth-failed" },
+    { route: ROUTE, k: "r", a: other, code: "auth-failed" },
+    { route: ROUTE, k: "r", a: wire.e, code: "auth-failed" },
+  ]);
 
   agent.wire.feed(sent);
   expect(agent.frames).toEqual([frame("p1")]);
+});
+
+test("a phone the agent no longer serves is told so in the clear on each hello, and no other phone on the route hears it", async () => {
+  // The agent holds keys for the phone paired last; one paired before it
+  // still says hello with its own.
+  const agentId = await newIdentity();
+  const served = await newIdentity();
+  const dropped = await newIdentity();
+  const agent = end(await serverSessionKeys(agentId, served.publicKey), {
+    role: "responder",
+  });
+  const current = end(await clientSessionKeys(served, agentId.publicKey), {
+    role: "initiator",
+  });
+  const old = end(await clientSessionKeys(dropped, agentId.publicKey), {
+    role: "initiator",
+  });
+
+  old.ch.hello();
+  const [hello] = pump(old, agent);
+  expect(agent.rejects).toEqual(["auth-failed"]);
+  const [notice, ...rest] = pump(agent, old, current);
+  expect(rest).toEqual([]);
+  // The phone instance and why, nothing more: no key, session or frame.
+  expect(JSON.parse(notice ?? "")).toEqual({
+    route: ROUTE,
+    k: "r",
+    a: header(hello).e,
+    code: "auth-failed",
+  });
+  expect(old.refusals).toEqual(["auth-failed"]);
+  expect(old.ready).toEqual([]);
+  // Addressed to another instance: the served phone neither acts nor drops.
+  expect(current.refusals).toEqual([]);
+  expect(current.rejects).toEqual([]);
+
+  // The next socket's hello is told again, so a notice lost with a socket is
+  // not the last word.
+  old.ch.hello();
+  pump(old, agent);
+  pump(agent, old, current);
+  expect(old.refusals).toEqual(["auth-failed", "auth-failed"]);
+
+  // The served phone binds as ever.
+  handshake(current, agent);
+  expect(current.ready).toHaveLength(1);
+  expect(current.refusals).toEqual([]);
+});
+
+test("a notice that the agent holds no handshake with this phone makes it say hello again, once until an ack answers", async () => {
+  const keys = await pairKeys();
+  const phone = end(keys.phone, { role: "initiator" });
+  const agent = end(keys.agent, { role: "responder" });
+  phone.ch.hello();
+  const [hello] = pump(phone, agent);
+  pump(agent, phone);
+  expect(phone.ready).toHaveLength(1);
+
+  // Unauthenticated, so the relay may feed one in as often as it likes: the
+  // phone says one hello, not one per copy.
+  const notice = JSON.stringify({
+    route: ROUTE,
+    k: "r",
+    a: header(hello).e,
+    code: "unknown-peer",
+  });
+  phone.wire.feed([notice, notice]);
+  const rehello = phone.wire.take();
+  expect(kinds(rehello)).toEqual(["h"]);
+  expect(phone.refusals).toEqual(["unknown-peer", "unknown-peer"]);
+
+  // The agent's ack binds it again; a later notice draws the next hello.
+  agent.wire.feed(rehello);
+  pump(agent, phone);
+  expect(phone.ready).toHaveLength(2);
+  phone.wire.feed([notice]);
+  expect(kinds(phone.wire.take())).toEqual(["h"]);
 });
 
 test("a phone frame replayed to the same agent is dropped", async () => {

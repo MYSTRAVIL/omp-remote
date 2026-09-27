@@ -286,6 +286,49 @@ test("the agent's echo reconciles the optimistic prompt in place", () => {
   expect(entries[0]).toMatchObject({ msgId: "u1", text: "steer now" });
 });
 
+test("the replay answering this phone's sync marks prompts the host never got as not delivered; queued ones keep waiting", () => {
+  const store = new AppStore();
+  store.setMachineList(["m1"]);
+  store.applyFrame("m1", sessions([meta({ id: "a" })]));
+  store.addPendingPrompt("a", "lost on the dead link", "steer", "c1");
+  store.addPendingPrompt("a", "still queued in omp", "steer", "c2");
+  store.addPendingPrompt("a", "taken in", "steer", "c3");
+  const shown = () =>
+    (store.transcriptFor("a")?.entries ?? []).map((e) =>
+      e.kind === "message"
+        ? `${e.text}${e.pending ? " ?" : e.failed ? " !" : ""}`
+        : e.callId,
+    );
+  // Another phone's replay says nothing about this phone's sends.
+  store.noteSync("m1", "mine");
+  store.applyFrame("m1", { t: "replayStart" });
+  store.applyFrame("m1", { t: "replayEnd", syncId: "theirs" });
+  expect(shown()).toEqual([
+    "lost on the dead link ?",
+    "still queued in omp ?",
+    "taken in ?",
+  ]);
+  // Sent after the sync: the replay cannot know it yet.
+  store.addPendingPrompt("a", "sent during the replay", "steer", "c4");
+  store.applyFrame("m1", { t: "replayStart" });
+  store.applyFrame("m1", {
+    t: "msg",
+    sessionId: "a",
+    phase: "end",
+    msgId: "u3",
+    role: "user",
+    text: "taken in",
+    clientId: "c3",
+  });
+  store.applyFrame("m1", { t: "replayEnd", syncId: "mine", queued: ["c2"] });
+  expect(shown()).toEqual([
+    "taken in",
+    "lost on the dead link !",
+    "still queued in omp ?",
+    "sent during the replay ?",
+  ]);
+});
+
 test("the sessions tree tracks a session's live title and updates", () => {
   const store = new AppStore();
   store.setMachineList(["m1"]);

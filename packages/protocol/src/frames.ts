@@ -12,6 +12,8 @@ export const SessionMeta = z.object({
   spawnId: z.string().optional(),
   // present only when the host-agent knows the session is running (prompt-control IPC is up) but has no transcript source (no Collab registration and no IPC feed).
   reachable: z.literal(false).optional(),
+  // set only by bridges that know the omp session runs without a UI (`omp -p`, rpc): nothing on the host shows it, so the phone lists it only while reachable.
+  headless: z.literal(true).optional(),
 });
 export type SessionMeta = z.infer<typeof SessionMeta>;
 
@@ -65,6 +67,10 @@ export const MsgFrame = z.object({
   /** The omp custom-message type (e.g. `async-result`) for a `system` message,
    *  so the phone can label the notice. Absent for ordinary messages. */
   kind: z.string().optional(),
+  /** On a user message: the `clientId` of the phone prompt it is, set by the
+   *  host-agent that delivered that prompt, so the phone settles its own copy
+   *  of it by id. Absent for other messages and from older hosts. */
+  clientId: z.string().optional(),
 });
 export const ToolFrame = z.object({
   t: z.literal("tool"),
@@ -156,6 +162,11 @@ export const PromptFrame = z.object({
    *  message. The bridge resolves each to model image content before
    *  `sendUserMessage`; an unresolved id fails the send rather than dropping it. */
   attachments: z.array(z.string()).optional(),
+  /** The phone's id for this send. The host-agent names it on the user
+   *  message omp makes of the prompt (`MsgFrame.clientId`), on a
+   *  `controlError` refusing it, and in the `replayEnd.queued` of each replay
+   *  while omp has yet to take it in. Absent from older phones. */
+  clientId: z.string().optional(),
 });
 export const InterruptFrame = z.object({
   t: z.literal("interrupt"),
@@ -291,6 +302,34 @@ export const HistoryFrame = z.object({
  */
 export const SyncFrame = z.object({
   t: z.literal("sync"),
+  /** The phone's name for this request, echoed on the `replayEnd` answering
+   *  it. Absent from older phones. */
+  id: z.string().optional(),
+});
+
+/**
+ * Agent → client: a replay (the host-agent's backfill; see `sync`) begins.
+ * Every replay comes bracketed: `replayStart`, the session list, each live
+ * session's retained transcript, pending interactions, images and unsettled
+ * attention, then `replayEnd`. Every client attached to the machine hears it.
+ * At `replayEnd` a client retires what it shows from that machine and the
+ * replay did not re-send: it settled while the client could not hear.
+ */
+export const ReplayStartFrame = z.object({
+  t: z.literal("replayStart"),
+});
+/**
+ * Agent → client: the replay `replayStart` began is complete. `syncId` names
+ * the `sync` it answers (none for a replay no phone asked for). `queued` lists
+ * the phone prompts (`PromptFrame.clientId`) the listed sessions' omp has not
+ * taken in yet: the host handles a phone's frames in order, so a prompt that
+ * phone sent before that `sync` which is neither here nor named by a user
+ * message in the replay never reached the host. Both absent from older hosts.
+ */
+export const ReplayEndFrame = z.object({
+  t: z.literal("replayEnd"),
+  syncId: z.string().optional(),
+  queued: z.array(z.string()).optional(),
 });
 
 /** Agent → client: the current machine-local session list snapshot. */
@@ -305,12 +344,18 @@ export const SessionsFrame = z.object({
  * `sessionId` + a coarse `reason`; it is E2E-sealed, so the aggregator never
  * sees it. The push trigger the agent sends the aggregator (`AttentionMsg`)
  * carries a separately sealed `NotifyNotice` the aggregator cannot open, so
- * it stays content-blind (spec §4.3/§12, content-blind §7).
+ * it stays content-blind (spec §4.3/§12, content-blind §7). The host-agent
+ * keeps the latest one per session until a frame settles it (see
+ * {@link attentionSettledBy}) and replays it to a (re)connecting client.
  */
 export const AttentionFrame = z.object({
   t: z.literal("attention"),
   sessionId: z.string(),
   reason: z.enum(["idle", "approval"]),
+  /** Host epoch ms the wait began, stamped by the host-agent when it first
+   *  sees the frame. It names the wait: a replay re-sends the same `at`, and
+   *  a new wait gets a later one. Absent from older hosts. */
+  at: z.number().optional(),
 });
 
 /**
@@ -323,6 +368,20 @@ export const AttentionFrame = z.object({
 export const NotifyPolicyFrame = z.object({
   t: z.literal("notifyPolicy"),
   awaySec: z.number().int().min(0).max(86_400),
+});
+
+/**
+ * Phone → agent: the user has this session on screen on the phone, which
+ * closes its notification there. The agent pushes no clear for a notice the
+ * phone already closed, nor the need it named once more: in Chromium a push
+ * that leaves no notification of the app showing spends a small silent-push
+ * budget, and once that is spent the browser shows its own notification,
+ * which names no session. Like {@link NotifyPolicyFrame}, not a
+ * {@link ControlFrame}: it changes only where the user is told.
+ */
+export const NoticeSeenFrame = z.object({
+  t: z.literal("noticeSeen"),
+  sessionId: z.string(),
 });
 
 /**
@@ -351,6 +410,9 @@ export const ControlErrorFrame = z.object({
     "close-unsupported",
   ]),
   message: z.string().min(1),
+  /** For a refused prompt, its `PromptFrame.clientId`, so the phone marks
+   *  that send as not delivered. */
+  clientId: z.string().optional(),
 });
 
 /** One question in an `ask` interaction (mirrors omp's built-in `ask` tool shape). */
@@ -376,6 +438,9 @@ export const InteractionFrame = z.object({
   sessionId: z.string(),
   /** Opaque per-interaction id; the reply must echo it. */
   id: z.string(),
+  /** Host epoch ms the host-agent first saw this interaction; a replay or a
+   *  re-sent id carries the same. Absent from older hosts. */
+  at: z.number().optional(),
   payload: z.discriminatedUnion("kind", [
     z.object({
       kind: z.literal("ask"),
@@ -402,6 +467,43 @@ export const InteractionEndFrame = z.object({
   id: z.string(),
   reason: z.enum(["resolved", "cancelled"]),
 });
+
+/**
+ * Whether `frame`, from the session's own host, settles an `attention` wait
+ * of `reason`. `wasStreaming` is the session's `streaming` before `frame` (its
+ * last `state`), undefined when unknown. The host-agent's notifier clears a
+ * push on the same frames (`packages/agent/src/notifier.ts`), and the agent's
+ * replay and the phone's queue drop the wait on them, so all three agree:
+ * - a user message: someone took the turn;
+ * - a `state` at work again: after an idle wait always (its loop runs
+ *   again), after an approval only when it was not streaming before;
+ * - for an approval asked at the desk, the tools moving on or the agent
+ *   speaking again;
+ * - a new interaction: the session asks something else now;
+ * - `bye`: the session ended.
+ */
+export function attentionSettledBy(
+  reason: AttentionFrame["reason"],
+  frame: UplinkFrame,
+  wasStreaming: boolean | undefined,
+): boolean {
+  switch (frame.t) {
+    case "msg":
+      return (
+        frame.role === "user" ||
+        (reason === "approval" && frame.role === "assistant")
+      );
+    case "state":
+      return frame.streaming && (reason === "idle" || wasStreaming === false);
+    case "tool":
+      return reason === "approval";
+    case "interaction":
+    case "bye":
+      return true;
+    default:
+      return false;
+  }
+}
 
 /**
  * Client → agent: the user's answer to an {@link InteractionFrame}. State-changing,
@@ -636,6 +738,7 @@ export const DownlinkFrame = z.discriminatedUnion("t", [
   ResourceAbortFrame,
   MediaFetchFrame,
   NotifyPolicyFrame,
+  NoticeSeenFrame,
   HistoryRequestFrame,
 ]);
 /**
@@ -660,10 +763,12 @@ export const AnyFrame = z.union([
   PromptControlReadyFrame,
 ]);
 /** Everything the agent may push to a connected client: snapshots, stored
- *  session history, and relayed uplink frames. */
+ *  session history, the brackets around a replay, and relayed uplink frames. */
 export const ClientMessage = z.union([
   SessionsFrame,
   HistoryFrame,
+  ReplayStartFrame,
+  ReplayEndFrame,
   UplinkFrame,
 ]);
 /**
@@ -676,6 +781,8 @@ export const ClientMessage = z.union([
 export const SealedFrame = z.union([
   SessionsFrame,
   HistoryFrame,
+  ReplayStartFrame,
+  ReplayEndFrame,
   UplinkFrame,
   DownlinkFrame,
 ]);
@@ -700,6 +807,8 @@ export type JobRow = z.infer<typeof JobRow>;
 export type ClientMessage = z.infer<typeof ClientMessage>;
 export type AttentionFrame = z.infer<typeof AttentionFrame>;
 export type SealedFrame = z.infer<typeof SealedFrame>;
+export type ReplayStartFrame = z.infer<typeof ReplayStartFrame>;
+export type ReplayEndFrame = z.infer<typeof ReplayEndFrame>;
 export type ControlErrorFrame = z.infer<typeof ControlErrorFrame>;
 export type PromptControlReadyFrame = z.infer<typeof PromptControlReadyFrame>;
 export type InteractionFrame = z.infer<typeof InteractionFrame>;

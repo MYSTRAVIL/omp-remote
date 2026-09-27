@@ -31,8 +31,10 @@ import { NotifyPolicy, type NotifyPolicySource } from "./notify-policy";
 export interface SessionFeed {
   /** Register an outbound sink for every frame the feed emits; returns an unsubscribe. */
   subscribe(sink: (msg: ClientMessage) => void): () => void;
-  /** Full backfill for a (re)connecting client: session list + retained state. */
-  replay(): ClientMessage[];
+  /** Full backfill for a (re)connecting client, bracketed by `replayStart`
+   *  and `replayEnd`: session list + retained state. `syncId` names the
+   *  phone's `sync` it answers, echoed on `replayEnd`. */
+  replay(syncId?: string): ClientMessage[];
   /** Route any phone command (every downlink frame but `sync`) to its target. */
   deliverDownlink(frame: DownlinkCommand): void;
 }
@@ -145,6 +147,9 @@ const FLUSH_RETRY_MS = 50;
  * until it is classified here.
  */
 const WHILE_DOWN: Record<ClientMessage["t"], "replayed" | "held"> = {
+  // Only ever inside a replay, which each open and each `sync` send whole.
+  replayStart: "replayed",
+  replayEnd: "replayed",
   // The replay leads with a fresh session list.
   sessions: "replayed",
   // Retained per session: the latest state, jobs and catalog, and each message
@@ -156,11 +161,12 @@ const WHILE_DOWN: Record<ClientMessage["t"], "replayed" | "held"> = {
   tool: "replayed",
   // Retained until it is answered or ended.
   interaction: "replayed",
+  // The latest per session, retained until a frame settles it.
+  attention: "replayed",
   // A retained image is re-announced `deferred`; the phone fetches its chunks.
   mediaInit: "replayed",
   mediaChunk: "replayed",
   // Events, not state: nothing is retained for them.
-  attention: "held",
   controlError: "held",
   resourceProgress: "held",
   resourceReady: "held",
@@ -254,8 +260,10 @@ export interface UplinkConfig {
  * are kept (see `WHILE_DOWN`), in a bounded drop-oldest queue whose drops are
  * reported. The aggregator stays content-blind — it only ever sees sealed
  * envelopes (the clear route and handshake header, the payload sealed), the
- * clear register/ping control, and `attention` push requests whose only
- * payload is a notice sealed under a key it never holds (see {@link Notifier}).
+ * clear notice the channel answers a phone line it refused with (it names no
+ * key, session or frame), the clear register/ping control, and `attention`
+ * push requests whose only payload is a notice sealed under a key it never
+ * holds (see {@link Notifier}).
  */
 export class Uplink {
   readonly #cfg: UplinkConfig;
@@ -349,11 +357,12 @@ export class Uplink {
       // A (re)connecting phone requests backfill: the full replay, queued behind
       // whatever is still waiting so it lands in order.
       if (f.t === "sync") {
-        for (const msg of this.#cfg.feed.replay()) this.#queue(msg);
+        for (const msg of this.#cfg.feed.replay(f.id)) this.#queue(msg);
         this.#flush();
       }
       // Every command goes to the one router the loopback client also uses; a
-      // reply also answers the need a push may be waiting on.
+      // reply also answers the need a push may be waiting on, and a
+      // `noticeSeen` tells the notifier the phone closed that push itself.
       else {
         this.#cfg.feed.deliverDownlink(f);
         this.#notifier?.command(f);

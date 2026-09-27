@@ -86,17 +86,18 @@ const report = await new Response(deploy.stdout).text();
 await step("remote deploy", deploy.exited);
 process.stdout.write(report);
 
-// 5. Verify the public edge serves the new build.
+// 5. Verify the public edge serves the new build. The minifier builds the
+// cache name from the `omp-remote-shell-` prefix and the sha at runtime, so
+// the full name never appears as a literal; look for the sha itself.
 const expected = `omp-remote-shell-${buildId}`;
-console.log(`verifying ${publicUrl}/sw.js serves ${expected} …`);
+console.log(`verifying ${publicUrl}/sw.js serves build ${buildId} …`);
 const swText = await (
   await fetch(`${publicUrl}/sw.js`, { cache: "no-store" })
 ).text();
-if (swText.includes(expected)) {
+if (swText.includes(buildId)) {
   console.log(
     `✓ live: ${expected}. Reopen the PWA on the phone to pick up the new SW.`,
   );
 } else {
-  const live = swText.match(/omp-remote-shell-[a-z0-9]+/)?.[0] ?? "(none)";
-  throw new Error(`public sw.js still serves ${live}, expected ${expected}`);
+  throw new Error(`public sw.js does not contain build ${buildId}`);
 }

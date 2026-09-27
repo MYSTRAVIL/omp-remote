@@ -46,16 +46,29 @@ Every package is `@omp-remote/*`, Bun + TypeScript (strict), ESM. Libraries live
   machine and assembles the tree (sort: machine label → project → session start). A
   late phone attaching to a steady machine says a sealed hello; the `Uplink` acks it, and
   the ack makes the phone send a sealed `{t:"sync"}` that the `Uplink` answers with the replay.
+  Every replay comes bracketed by `replayStart` … `replayEnd` (session list, retained
+  transcripts, pending interactions, images, each session's unsettled attention), and every
+  phone attached to the machine hears it. At `replayEnd` a phone retires the interactions and
+  waits it showed from that machine that the replay did not re-send (they settled while it
+  could not hear), with their holds.
   Sealed envelopes carry a per-instance epoch and counter in the AAD, so the relay cannot
   replay them (`packages/crypto/src/sealed-channel.ts`).
 - **View a transcript.** The bridge feed (`msg`/`tool`/`state`) is sealed out and reduced by
   the PWA's pure transcript reducer into streaming text, tool-call cards, and a footer.
+  The host-agent retains what it replays in memory only. Every time a bridge (re)connects,
+  it re-sends what an agent that restarted lost: the IPC feed its recent transcript, read
+  from omp's session (`ctx.sessionManager.getBranch()`, under the ids its live frames use),
+  and its still-pending interactions; either role its catalog, job list and (IPC feed)
+  footer. A Collab room re-sends its snapshot to the agent's rejoining guest.
 - **Control (prompt / interrupt / spawn).** The signed-in PWA seals a control frame (no
   per-action passkey check since 2026-09-24); the aggregator relays it blind; the `Uplink` opens it and routes
   to the owning session's bridge (`deliverDownlink`), or `spawnSession` for `spawn`.
 - **Attention.** The bridge derives "needs input"; the `Uplink` emits a content-free clear
   trigger alongside the sealed `AttentionFrame`; the aggregator sends a **payloadless** Web
-  Push. Session identity lives only inside the sealed frame — zero content at the edge.
+  Push. Session identity lives only inside the sealed frame — zero content at the edge. The
+  host-agent stamps each attention and interaction with the host time it began (`at`), keeps
+  each session's latest unsettled attention and replays it; the agent, the phone and the
+  push clear a wait on the same frames (`attentionSettledBy`).
 
 ## Invariants (enforced; do not fight)
 

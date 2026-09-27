@@ -3,6 +3,8 @@ import {
   SealedAckPayload,
   type SealedFrame,
   SealedFrame as SealedFrameSchema,
+  SealedNotice,
+  type SealedRefusal,
   SealedWireEnvelope,
 } from "@omp-remote/protocol";
 import sodium from "libsodium-wrappers";
@@ -47,6 +49,14 @@ export interface SealedChannelOptions {
   maxPending?: number;
   /** Diagnostics for every dropped inbound line. Never receives plaintext. */
   onReject?: (reason: SealedRejectReason) => void;
+  /**
+   * Initiator: the responder refused one of this instance's lines and said so
+   * in a clear {@link SealedNotice}. `unknown-peer` needs nothing more: this
+   * instance has said hello again. `auth-failed` cannot be mended from here:
+   * the responder's keys belong to another pairing. A notice is not
+   * authenticated, so a relay can forge or drop one.
+   */
+  onRefused?: (code: SealedRefusal) => void;
 }
 
 const enc = new TextEncoder();
@@ -113,6 +123,12 @@ interface InitiatorState {
   pending: BoundedQueue<SealedFrame>;
   /** A flush is draining `pending`: new frames queue behind it to keep FIFO order. */
   flushing: boolean;
+  /**
+   * An `unknown-peer` notice made this instance say hello again and no ack has
+   * answered since: however often a relay replays the notice, it draws that
+   * one hello.
+   */
+  renewing: boolean;
 }
 
 interface ResponderState {
@@ -124,6 +140,11 @@ interface ResponderState {
    * epoch leaves once a hello from it is accepted, so a lost ack is retried.
    */
   nudged: Set<string>;
+  /**
+   * Initiator epochs told since their last hello that a line of theirs was
+   * refused (see `#refuse`). An epoch leaves once a hello from it is accepted.
+   */
+  refused: Set<string>;
   maxPeers: number;
 }
 
@@ -146,6 +167,12 @@ interface ResponderState {
  * retried rather than wedging the phone: it answers any hello newer than the
  * one it last answered, which the agent sends on every uplink open and, once
  * per hello it accepts from a phone, for that phone's stale frame.
+ *
+ * A phone line the responder cannot open, or opens from an instance it holds
+ * no handshake with, it answers in the clear, as it has no sealed way to: a
+ * `SealedNotice` addressed to that instance's epoch. So a phone whose pairing
+ * the agent no longer serves learns it (see `onRefused`), and one the agent
+ * lost says hello again.
  */
 export class SealedChannel {
   readonly #keys: SessionKeys;
@@ -153,6 +180,7 @@ export class SealedChannel {
   readonly #route: string;
   readonly #state: InitiatorState | ResponderState;
   readonly #onReject: ((reason: SealedRejectReason) => void) | undefined;
+  readonly #onRefused: ((code: SealedRefusal) => void) | undefined;
   /** This instance's epoch. A responder draws a new one when it rotates. */
   #epoch = b64u(sodium.randombytes_buf(EPOCH_BYTES));
   /** The last counter sent. Every envelope takes the next one, whatever its kind. */
@@ -171,6 +199,7 @@ export class SealedChannel {
     this.#wire = wire;
     this.#route = routeId;
     this.#onReject = options.onReject;
+    this.#onRefused = options.onRefused;
     if (options.role === "initiator") {
       this.#state = {
         role: "initiator",
@@ -179,6 +208,7 @@ export class SealedChannel {
         nudged: undefined,
         pending: new BoundedQueue(options.maxPending ?? DEFAULT_MAX_PENDING),
         flushing: false,
+        renewing: false,
       };
     } else {
       const maxPeers = options.maxPeers ?? DEFAULT_MAX_PEERS;
@@ -188,6 +218,7 @@ export class SealedChannel {
         role: "responder",
         peers: new Map(),
         nudged: new Set(),
+        refused: new Set(),
         maxPeers,
       };
     }
@@ -279,8 +310,17 @@ export class SealedChannel {
       this.#onReject?.("malformed");
       return;
     }
+    const s = this.#state;
     const parsed = SealedWireEnvelope.safeParse(json);
     if (!parsed.success) {
+      // The one clear line an initiator takes is a responder's notice.
+      if (s.role === "initiator") {
+        const notice = SealedNotice.safeParse(json);
+        if (notice.success && notice.data.route === this.#route) {
+          this.#initiatorOnNotice(s, notice.data);
+          return;
+        }
+      }
       this.#onReject?.("malformed");
       return;
     }
@@ -290,9 +330,9 @@ export class SealedChannel {
       plaintext = open(this.#keys.rx, wire, associatedData(this.#route, wire));
     } catch {
       this.#onReject?.("auth-failed");
+      if (s.role === "responder") this.#refuse(s, wire, "auth-failed");
       return;
     }
-    const s = this.#state;
     if (s.role === "initiator") {
       if (wire.k === "a") this.#initiatorOnAck(s, wire, plaintext);
       else if (wire.k === "d") this.#initiatorOnData(s, wire, plaintext);
@@ -332,6 +372,7 @@ export class SealedChannel {
       peer.hi = wire.c;
     } else s.peer = { epoch: wire.e, hi: wire.c };
     s.answered = answered;
+    s.renewing = false;
     this.#flush(s);
     for (const cb of this.#readyCbs) {
       if (this.#closed) return;
@@ -387,6 +428,21 @@ export class SealedChannel {
     this.#emit("h", EMPTY);
   }
 
+  /**
+   * A responder's notice: act on one addressed to this instance. Notices go to
+   * every tab on the route, so another instance's is no drop here either.
+   */
+  #initiatorOnNotice(s: InitiatorState, notice: SealedNotice): void {
+    if (notice.a !== this.#epoch) return;
+    // The responder holds no handshake with this instance: bind again, once
+    // until an ack answers, however often the notice comes.
+    if (notice.code === "unknown-peer" && !s.renewing) {
+      s.renewing = true;
+      this.#emit("h", EMPTY);
+    }
+    this.#onRefused?.(notice.code);
+  }
+
   /** Send the held frames in FIFO order, sealed to the verified responder epoch. */
   #flush(s: InitiatorState): void {
     // Re-entered from a synchronous transport: the outer flush drains the rest.
@@ -435,6 +491,7 @@ export class SealedChannel {
     // Answered: should the ack be lost, this phone's next stale frame nudges it
     // again. A replayed hello was refused above, so it cannot re-arm the nudge.
     s.nudged.delete(wire.e);
+    s.refused.delete(wire.e);
     if (rotate) this.#emit("h", EMPTY);
     this.#emit("a", enc.encode(JSON.stringify(wire.c)), wire.e);
   }
@@ -458,6 +515,7 @@ export class SealedChannel {
     const hi = s.peers.get(wire.e);
     if (hi === undefined) {
       this.#onReject?.("unknown-peer");
+      this.#refuse(s, wire, "unknown-peer");
       return;
     }
     if (wire.c <= hi) {
@@ -466,6 +524,30 @@ export class SealedChannel {
     }
     s.peers.set(wire.e, wire.c);
     this.#deliver(plaintext);
+  }
+
+  /**
+   * Tell the phone instance that sent `wire` in a clear `SealedNotice` that its
+   * line was refused for `code`, as nothing sealed would reach it. Once per
+   * phone connection: a hello, which a phone says on every socket it opens,
+   * draws one each time, any other line one only while that instance has heard
+   * none since its last hello, so a phone flushing doomed frames hears it once.
+   */
+  #refuse(
+    s: ResponderState,
+    wire: SealedWireEnvelope,
+    code: SealedRefusal,
+  ): void {
+    if (wire.k !== "h" && s.refused.has(wire.e)) return;
+    if (s.refused.size >= s.maxPeers) s.refused.clear();
+    s.refused.add(wire.e);
+    const notice: SealedNotice = {
+      route: this.#route,
+      k: "r",
+      a: wire.e,
+      code,
+    };
+    this.#wire.send(enc.encode(`${JSON.stringify(notice)}\n`));
   }
 
   #deliver(plaintext: Uint8Array): void {

@@ -28,7 +28,9 @@ type IconName =
   | "chevron"
   | "stop"
   | "power"
-  | "notice";
+  | "notice"
+  | "camera"
+  | "folder";
 
 const iconPaths: Record<IconName, string> = {
   terminal: "m5 6 5 6-5 6m8 0h6",
@@ -45,6 +47,8 @@ const iconPaths: Record<IconName, string> = {
   stop: "M6 6h12v12H6z",
   power: "M12 3v8M7.1 6.2a7.5 7.5 0 1 0 9.8 0",
   notice: "m12 3 9 9-9 9-9-9zM12 11v5M12 8v.01",
+  camera: "M8 5h8l2 3h3v11H3V8h3zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6",
+  folder: "M3 7h4l2 2h10v11H3zM3 7V5h7v2",
 };
 
 export function icon(name: IconName): SVGSVGElement {

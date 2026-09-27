@@ -15,6 +15,7 @@ import { meetsMinOmp, ompVersion } from "./collab/omp-cli";
 import { CollabRegistryClient } from "./collab/registry-client";
 import { type AgentStartFailure, consoleAgentDiagnostic } from "./diagnostics";
 import { NotifyPolicy, notifyPolicyPath } from "./notify-policy";
+import { servedPhone } from "./pair";
 import { agentSocketUrl } from "./server-url";
 import { AgentService, type DevClientConfig } from "./service";
 import { Uplink } from "./uplink";
@@ -121,13 +122,19 @@ export async function startAgent(cfg: Config): Promise<RunningAgent> {
     } else {
       const store = new PairingStore(secretPaths.pairing, secretOptions);
       await store.load();
-      const phone = agent.phoneId
-        ? store.peer(agent.phoneId)
-        : store.peers()[0];
-      if (!phone) {
+      // The newest trusted phone, even when the config names another: a
+      // pairing that stopped between trusting its phone and saving it as
+      // `agent.phoneId` must not leave the agent keyed to a phone that is gone.
+      const served = servedPhone(store, agent.phoneId);
+      if (served === undefined)
         diagnostic({ event: "uplink_not_started", code: "pairing-not-found" });
-      } else {
-        const keys = await serverSessionKeys(store.self(), phone.publicKey);
+      else {
+        if (served.diverged !== undefined)
+          diagnostic({ event: "uplink_phone_diverged", code: served.diverged });
+        const keys = await serverSessionKeys(
+          store.self(),
+          served.peer.publicKey,
+        );
         uplink = new Uplink({
           url: uplinkUrl,
           machineId: cfg.machineId,

@@ -29,14 +29,18 @@ test("trusted peer persists across stores", async () => {
   expect(b.peer("phone")?.publicKey).toBe("AAAA");
 });
 
-test("trust upserts by id", async () => {
+test("trust upserts by id, and a phone trusted again becomes the newest", async () => {
   const p = tmp();
   const a = new PairingStore(p);
   await a.load();
   await a.trust({ id: "phone", publicKey: "AAAA" });
+  await a.trust({ id: "tablet", publicKey: "CCCC" });
   await a.trust({ id: "phone", publicKey: "BBBB" });
-  expect(a.peers().length).toBe(1);
   expect(a.peer("phone")?.publicKey).toBe("BBBB");
+  // The agent serves the newest trusted phone: the one that paired last.
+  const b = new PairingStore(p);
+  await b.load();
+  expect(b.peers().map((peer) => peer.id)).toEqual(["tablet", "phone"]);
 });
 
 test.skipIf(process.platform !== "win32")(

@@ -135,35 +135,111 @@ function shown(node: Element): string {
   return copy.textContent ?? "";
 }
 
-test("a machine without its live list says it is syncing, never 0 sessions; with none live, it says why and points at Past sessions", () => {
+test("the main view lists only machines with a session: a machine without one shows as syncing while its list is in doubt, never 0, and as no live sessions after", () => {
   const { root, draw } = mount();
   const store = new AppStore();
-  const group = () => {
+  const nav = () => {
     draw(store.tree(), store.connecting());
-    const node = root.querySelector(".machine-group");
-    if (!node) throw new Error("machine not rendered");
-    return node;
+    return rail(root);
   };
 
   // Listed by the relay, its snapshot not in yet.
-  store.setMachineList(["tower"]);
-  const syncing = shown(group());
+  store.setMachineList(["tower", "laptop"]);
+  const syncing = shown(nav());
   expect(syncing).toContain("Syncing sessions…");
   expect(syncing).not.toContain("0");
   expect(syncing).not.toContain("No live sessions");
+  expect(nav().querySelector(".machine-group")).toBeNull();
 
-  // Its snapshot lists nothing running.
+  // Only the machine with a session is listed.
   store.applyFrame("tower", { t: "sessions", sessions: [] });
-  const empty = shown(group());
+  store.applyFrame("laptop", {
+    t: "sessions",
+    sessions: [session("s1", "Fix the login")],
+  });
+  const listed = [...nav().querySelectorAll(".machine-group .machine")].map(
+    (node) => node.textContent,
+  );
+  expect(listed).toEqual(["laptop"]);
+  expect(shown(nav())).not.toContain("No live sessions");
+
+  // Its session ends: nothing is left to list.
+  store.applyFrame("laptop", { t: "sessions", sessions: [] });
+  const empty = shown(nav());
   expect(empty).not.toContain("Syncing");
   expect(empty).toContain("No live sessions.");
-  expect(empty).toContain("after the bridge was installed");
-  expect(empty).toContain("Past sessions");
-  expect(group().querySelector(".machine-count")?.textContent).toBe("0");
+  expect(nav().querySelector(".machine-group")).toBeNull();
+  expect(nav().querySelector(".empty-pair")).toBeNull();
+});
 
-  // Offline, it has nothing on the way and needs no bridge hint.
-  store.setMachineList([]);
-  const offline = shown(group());
-  expect(offline).not.toContain("Syncing");
-  expect(offline).not.toContain("Past sessions");
+test("an unreachable headless session is not listed; an unreachable interactive one says so", () => {
+  const { root, draw } = mount();
+  const store = new AppStore();
+  store.setMachineList(["tower", "laptop"]);
+  store.applyFrame("tower", {
+    t: "sessions",
+    sessions: [
+      { ...session("tui", "At the desk"), reachable: false },
+      { ...session("run", "Coral run"), reachable: false, headless: true },
+    ],
+  });
+  store.applyFrame("laptop", {
+    t: "sessions",
+    sessions: [
+      { ...session("print", "Print run"), reachable: false, headless: true },
+    ],
+  });
+  draw(store.tree(), store.connecting());
+  const rows = [...rail(root).querySelectorAll<HTMLElement>(".session")];
+  expect(rows.map((row) => row.dataset.sessionId)).toEqual(["tui"]);
+  expect(rows[0]?.textContent).toContain("Unreachable");
+  // A machine whose only session is hidden is not listed either.
+  expect(
+    [...rail(root).querySelectorAll(".machine-group .machine")].map(
+      (node) => node.textContent,
+    ),
+  ).toEqual(["tower"]);
+
+  // A headless run its host reaches is listed like any other.
+  store.applyFrame("laptop", {
+    t: "sessions",
+    sessions: [{ ...session("print", "Print run"), headless: true }],
+  });
+  draw(store.tree(), store.connecting());
+  expect(
+    [...rail(root).querySelectorAll<HTMLElement>(".session")].map(
+      (row) => row.dataset.sessionId,
+    ),
+  ).toEqual(["print", "tui"]);
+});
+
+test("a machine this phone has to pair with again says so with a way to re-pair instead of syncing forever, until an exchange opens here", () => {
+  const { root, draw } = mount();
+  const store = new AppStore();
+  const nav = () => {
+    draw(store.tree(), store.connecting());
+    return rail(root);
+  };
+  store.setMachineList(["tower", "laptop"]);
+  store.setMachineLabels(new Map([["tower", "Desk"]]));
+  store.applyFrame("laptop", {
+    t: "sessions",
+    sessions: [session("s1", "Fix the login")],
+  });
+  store.markUnpaired("tower");
+
+  const notice = nav().querySelector(".tree-repair");
+  expect(notice?.textContent).toContain(
+    "This phone is no longer paired with Desk",
+  );
+  expect(notice?.querySelector("button")?.textContent).toContain("Re-pair");
+  expect(shown(nav())).not.toContain("Syncing");
+  // The badge counts again: no list from that machine is awaited.
+  expect(store.waitingCount()).toBe(0);
+
+  // Its ack, or any frame, opened under this phone's keys: paired after all,
+  // and its list is awaited again.
+  store.markPaired("tower");
+  expect(nav().querySelector(".tree-repair")).toBeNull();
+  expect(store.waitingCount()).toBeUndefined();
 });

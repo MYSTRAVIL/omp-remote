@@ -12,6 +12,7 @@ import {
   backoffDelay,
   defaultScheduler,
 } from "@omp-remote/protocol";
+import { randomId } from "./ids";
 import type { SessionCheck } from "./session-check";
 import type { AppStore } from "./store";
 
@@ -185,9 +186,12 @@ export function browserSocket(url: string): ClientSocket {
  * The channel opens agent frames only under an agent epoch an ack verified, so
  * the relay cannot replay a recorded agent stream; a restarted agent's first
  * broadcast makes the channel say hello again. Frames sent before a machine's
- * first ack wait in its channel. Inbound lines are demultiplexed by their clear
- * `route` to the matching channel; clear control (`machines`/`auth`) drives the
- * store. Frame plaintext is never on the wire. When the socket drops it
+ * first ack wait in its channel. An agent that cannot open this page's lines
+ * (it serves another pairing) says so in a clear notice, and the store shows
+ * that machine as needing a re-pair until an ack proves the keys match again.
+ * Inbound lines are demultiplexed by their clear `route` to the matching
+ * channel; clear control (`machines`/`auth`) drives the store. Frame
+ * plaintext is never on the wire. When the socket drops it
  * reconnects with bounded jittered backoff and re-attaches; lines sealed
  * meanwhile wait in a bounded drop-oldest queue, and an idle keepalive ping
  * holds the connection open (spec §4.1/§9).
@@ -280,16 +284,28 @@ export class PhoneClient {
       const sink = new RouteSink((raw) => this.#sendRaw(raw));
       const channel = new SealedChannel(machine.keys, sink, machine.machineId, {
         role: "initiator",
+        // The agent could not open this phone's line: it serves another
+        // pairing, so this phone has to pair with it again. (The channel
+        // answers an `unknown-peer` refusal itself, with a new hello.)
+        onRefused: (code) => {
+          if (code === "auth-failed")
+            this.#store.markUnpaired(machine.machineId);
+        },
       });
       channel.onFrame((f) => this.#store.applyFrame(machine.machineId, f));
-      // Each ack proves the agent live and bound to this channel: pull its
-      // full state (the snapshot, transcripts, pending interactions) then.
-      // Only once per agent epoch per socket: a second ack from the same epoch
-      // (the agent answered two hellos) would pull a second full replay.
+      // Each ack proves the agent live and bound to this channel, under this
+      // phone's keys: pull its full state (the snapshot, transcripts, pending
+      // interactions) then. Only once per agent epoch per socket: a second ack
+      // from the same epoch (the agent answered two hellos) would pull a
+      // second full replay. The sync is named, so the store knows the replay
+      // that answers it.
       channel.onReady((peerEpoch) => {
+        this.#store.markPaired(machine.machineId);
         if (this.#synced.get(machine.machineId) === peerEpoch) return;
         this.#synced.set(machine.machineId, peerEpoch);
-        channel.sendFrame({ t: "sync" });
+        const id = randomId();
+        this.#store.noteSync(machine.machineId, id);
+        channel.sendFrame({ t: "sync", id });
         // The agent keeps where the user is told; tell it on every connect.
         this.#sendNotifyPolicy(machine.machineId, channel);
       });

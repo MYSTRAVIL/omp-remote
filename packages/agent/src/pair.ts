@@ -5,7 +5,7 @@ import {
   pairingSas,
   verifyPeerMac,
 } from "@omp-remote/crypto";
-import type { PairingStore } from "@omp-remote/crypto/pairing-store";
+import type { PairingStore, Peer } from "@omp-remote/crypto/pairing-store";
 import { PairHostResponse, PairResultResponse } from "@omp-remote/protocol";
 import { readSecret } from "@omp-remote/protocol/ipc";
 
@@ -24,6 +24,14 @@ export interface PairingDeps {
    */
   agentTokenPath: string;
   store: PairingStore;
+  /**
+   * Make the phone just trusted the one this machine serves: save it as
+   * `agent.phoneId`. It runs right after the store trusts the phone and
+   * before pairing reports success, so no caller can stop in between. A
+   * process that dies between the two writes leaves the phone trusted but not
+   * named, and `servedPhone` still picks it, as the newest trusted phone.
+   */
+  serve: (phonePub: string) => Promise<void>;
   /**
    * Present the token already at `agentTokenPath` on `/pair/host`, so the
    * claim may replace this machine's token. Set it only when pairing with the
@@ -52,6 +60,43 @@ export interface PairingResult {
   agentToken: string;
 }
 
+/**
+ * Why `agent.phoneId` names another phone than the one served: it names no
+ * trusted phone, or a phone was trusted after it.
+ */
+export type ServedPhoneDivergence = "phone-not-trusted" | "newer-phone-trusted";
+
+/** The phone this machine's agent serves; see {@link servedPhone}. */
+export interface ServedPhone {
+  peer: Peer;
+  /** Set when `agent.phoneId` names another phone than `peer`: why. */
+  diverged?: ServedPhoneDivergence;
+}
+
+/**
+ * The phone this machine's agent serves: the newest one `store` trusts. Each
+ * pairing trusts its phone, then names it `agent.phoneId` (see
+ * `PairingDeps.serve`), so `phoneId` names that newest phone unless a
+ * pairing stopped between the two writes or the config was edited: then
+ * `diverged` says how the config is off. With no `phoneId` the newest phone is
+ * served as is. Undefined when no phone is trusted.
+ */
+export function servedPhone(
+  store: PairingStore,
+  phoneId: string | undefined,
+): ServedPhone | undefined {
+  const newest = store.peers().at(-1);
+  if (newest === undefined) return undefined;
+  if (phoneId === undefined || phoneId === newest.id) return { peer: newest };
+  return {
+    peer: newest,
+    diverged:
+      store.peer(phoneId) === undefined
+        ? "phone-not-trusted"
+        : "newer-phone-trusted",
+  };
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_TIMEOUT_MS = 300_000;
 
@@ -67,8 +112,9 @@ export class PairingTimeoutError extends Error {
  * Drive the host side of the brokered pairing ceremony end to end: register a
  * pending pairing with the aggregator, show the operator the code + SAS, poll
  * for the phone's claim, verify the phone's role-tagged MAC against the code,
- * and — only if it verifies — store the machine's new `/agent` token and trust
- * the phone peer in the store. Only the code yields the rendezvous id; with
+ * and — only if it verifies — store the machine's new `/agent` token, trust
+ * the phone peer in the store and make it the phone served (`serve`), all
+ * before it reports success. Only the code yields the rendezvous id; with
  * `renew`, the machine presents its current token on `/pair/host`, since the
  * server lets a claim replace an existing machine's token only then (a machine
  * whose token is gone or unreadable pairs as a new one). When the server
@@ -84,6 +130,7 @@ export async function performPairing(
     machineId,
     agentTokenPath,
     store,
+    serve,
     renew = false,
     print,
     newCode = newPairingCode,
@@ -162,6 +209,8 @@ export async function performPairing(
 
   await writeFileAtomic(agentTokenPath, agentToken);
   await store.trust({ id: phonePub, publicKey: phonePub });
+  // At once, so no caller stops between trusting the phone and serving it.
+  await serve(phonePub);
   print(`Paired ${machineId} with phone ${phonePub}.`);
 
   return { machineId, phonePub, sas, agentToken };

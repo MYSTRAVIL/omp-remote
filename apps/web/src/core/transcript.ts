@@ -1,5 +1,10 @@
-import type { JobRow, MediaInitFrame, UplinkFrame } from "@omp-remote/protocol";
-import { MAX_RESOURCE_BYTES } from "@omp-remote/protocol";
+import type {
+  JobRow,
+  MediaInitFrame,
+  MsgFrame,
+  UplinkFrame,
+} from "@omp-remote/protocol";
+import { MAX_RESOURCE_BYTES, normalizePromptText } from "@omp-remote/protocol";
 import { fromBase64, toBase64 } from "./base64";
 
 /**
@@ -13,7 +18,13 @@ import { fromBase64, toBase64 } from "./base64";
  *   REPLACE the accumulated text (never concatenate); robust under drop-oldest.
  * - `msg.role` carries assistant / thinking / user; the render keys a class off it.
  * - entries (message blocks + tool cards) keep FIRST-SEEN order, keyed by
- *   `msgId` / `callId`; later frames for a known key mutate in place.
+ *   `msgId` / `callId`; later frames for a known key mutate in place. Local
+ *   echoes of sent prompts wait last, in send order, until the host's user
+ *   message confirms one: it then moves to where the host has it, after all
+ *   that is confirmed, where a replay puts it too. A reply that streams new
+ *   text after a later confirmed user message moves below that message: omp
+ *   took the message in first, so the text arriving now answers it (the
+ *   host-agent reorders its retained frames the same way for a replay).
  */
 
 export interface MessageEntry {
@@ -24,9 +35,16 @@ export interface MessageEntry {
   /** True while the block is still streaming; false once its `end` phase lands. */
   streaming: boolean;
   /** Set while this is a local, unconfirmed echo of a just-sent prompt — the send
-   *  mode — awaiting the agent's own message frame to reconcile it in place: a
-   *  `steer` is not yet steered in, a `followUp` not yet started. */
+   *  mode — awaiting the host's user message to confirm it: a `steer` is not
+   *  yet steered in, a `followUp` not yet started. */
   pending?: "steer" | "followUp";
+  /** A local echo's `PromptFrame.clientId`, which the host names on the user
+   *  message it becomes. */
+  clientId?: string;
+  /** True once a local echo is known not to have reached omp: the host refused
+   *  it, the session ended first, or a resync showed the host never got it.
+   *  The host's user message still confirms it if one comes after all. */
+  failed?: boolean;
   /** Media embedded in this message (downlink images, assembled from media frames). */
   media?: MediaEntry[];
   /** Host epoch ms the message was written, or first seen by the host; taken
@@ -111,28 +129,31 @@ export function emptyTranscript(): TranscriptState {
   };
 }
 
+/** Where a new host entry goes: after all that is confirmed, before the local
+ *  echoes still waiting to be taken in (they stay last, in send order). */
+function hostIndex(state: TranscriptState): number {
+  let at = state.entries.length;
+  while (at > 0) {
+    const e = state.entries[at - 1];
+    if (e?.kind !== "message" || e.pending === undefined) break;
+    at--;
+  }
+  return at;
+}
+
+/** Move `entry` to where a new host entry goes. */
+function moveToHost(state: TranscriptState, entry: TranscriptEntry): void {
+  state.entries.splice(state.entries.indexOf(entry), 1);
+  state.entries.splice(hostIndex(state), 0, entry);
+}
+
 function messageFor(
   state: TranscriptState,
   msgId: string,
   role: string,
-  matchText?: string,
 ): MessageEntry {
   for (const e of state.entries)
     if (e.kind === "message" && e.msgId === msgId) return e;
-  // Adopt a matching optimistic echo (an in-flight local send) so the agent's
-  // own frame updates it in place instead of appearing a second time.
-  if (matchText !== undefined)
-    for (const e of state.entries)
-      if (
-        e.kind === "message" &&
-        e.pending !== undefined &&
-        e.role === role &&
-        e.text === matchText
-      ) {
-        e.msgId = msgId;
-        e.pending = undefined;
-        return e;
-      }
   const entry: MessageEntry = {
     kind: "message",
     msgId,
@@ -140,8 +161,101 @@ function messageFor(
     text: "",
     streaming: true,
   };
-  state.entries.push(entry);
+  state.entries.splice(hostIndex(state), 0, entry);
   return entry;
+}
+
+/**
+ * The local echo a host user message confirms: the one its `clientId` names,
+ * else (a host that names none, or lost track of the prompt) the oldest whose
+ * text matches. A named prompt this phone does not hold waiting is another
+ * device's, or confirmed already, and confirms nothing here.
+ */
+function localEcho(
+  state: TranscriptState,
+  frame: MsgFrame,
+): MessageEntry | undefined {
+  const text =
+    frame.clientId === undefined ? normalizePromptText(frame.text) : undefined;
+  for (const e of state.entries) {
+    if (e.kind !== "message" || e.role !== "user") continue;
+    if (e.pending === undefined && e.failed !== true) continue;
+    if (
+      frame.clientId === undefined
+        ? normalizePromptText(e.text) === text
+        : e.clientId === frame.clientId
+    )
+      return e;
+  }
+  return undefined;
+}
+
+/**
+ * The entry a msg frame updates: the one with its id; else, for a user
+ * message, the local echo it confirms, moved to where the host has it; else a
+ * new entry. A known reply that streams new text after a later confirmed user
+ * message moves below it; a re-sent frame (same text) or its `end` leaves it.
+ */
+function msgEntry(state: TranscriptState, frame: MsgFrame): MessageEntry {
+  const at = state.entries.findIndex(
+    (e) => e.kind === "message" && e.msgId === frame.msgId,
+  );
+  const known = state.entries[at];
+  if (known?.kind === "message") {
+    if (
+      frame.phase !== "end" &&
+      frame.role !== "user" &&
+      frame.text !== known.text
+    )
+      for (let i = at + 1; i < state.entries.length; i++) {
+        const e = state.entries[i];
+        if (
+          e?.kind === "message" &&
+          e.role === "user" &&
+          e.pending === undefined &&
+          e.failed !== true
+        ) {
+          moveToHost(state, known);
+          break;
+        }
+      }
+    return known;
+  }
+  const echo = frame.role === "user" ? localEcho(state, frame) : undefined;
+  if (echo === undefined) return messageFor(state, frame.msgId, frame.role);
+  echo.msgId = frame.msgId;
+  echo.pending = undefined;
+  echo.failed = undefined;
+  moveToHost(state, echo);
+  return echo;
+}
+
+/** A local echo that will not be taken in: it stops waiting, and stays where
+ *  the host's entries have reached. */
+function failEcho(state: TranscriptState, entry: MessageEntry): void {
+  entry.pending = undefined;
+  entry.failed = true;
+  moveToHost(state, entry);
+}
+
+/**
+ * Mark the local echo of prompt `clientId` as not delivered; false when no
+ * echo with that id still waits (it was confirmed, or failed already).
+ */
+export function failLocalEcho(
+  state: TranscriptState,
+  clientId: string,
+): boolean {
+  for (const e of state.entries)
+    if (
+      e.kind === "message" &&
+      e.pending !== undefined &&
+      e.clientId === clientId
+    ) {
+      failEcho(state, e);
+      return true;
+    }
+  return false;
 }
 
 function mediaEntryFor(
@@ -235,7 +349,7 @@ function toolFor(
     title: "",
     done: false,
   };
-  state.entries.push(entry);
+  state.entries.splice(hostIndex(state), 0, entry);
   return entry;
 }
 /**
@@ -249,7 +363,7 @@ export function reduceTranscript(
 ): TranscriptState {
   switch (frame.t) {
     case "msg": {
-      const entry = messageFor(state, frame.msgId, frame.role, frame.text);
+      const entry = msgEntry(state, frame);
       entry.text = frame.text;
       entry.role = frame.role;
       if (frame.kind !== undefined) entry.noticeKind = frame.kind;
@@ -286,6 +400,8 @@ export function reduceTranscript(
       break;
     }
     case "controlError": {
+      // A refused prompt's echo first, then the notice explaining it.
+      if (frame.clientId !== undefined) failLocalEcho(state, frame.clientId);
       const entry = messageFor(
         state,
         `control-error:${frame.action}`,
@@ -297,6 +413,9 @@ export function reduceTranscript(
     }
     case "bye": {
       state.ended = true;
+      // What the session had not taken in when it ended, it never will.
+      for (const e of [...state.entries])
+        if (e.kind === "message" && e.pending !== undefined) failEcho(state, e);
       for (const e of state.entries)
         if (e.kind === "message") e.streaming = false;
       if (state.footer) state.footer = { ...state.footer, streaming: false };

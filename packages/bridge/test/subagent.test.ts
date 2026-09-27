@@ -192,6 +192,47 @@ test.each(["feed", "collab"] as const)(
   },
 );
 
+test("an unreachable `omp -p` session is listed headless, so the phone can hide it; an interactive one is not", async () => {
+  const path = ipcAddr();
+  const { scheduler, fire } = manualScheduler();
+  const bothConnected = Promise.withResolvers<void>();
+  const connected = new Set<string>();
+  const print: OmpSession = {
+    id: "print-session",
+    hasUI: false,
+    file: join(sessionsDir, "2026-09-25T11-00-00-000Z_print-session.jsonl"),
+  };
+  svc = new AgentService({
+    token,
+    ipcPath: path,
+    scheduler,
+    diagnostic: (event: AgentDiagnostic) => {
+      if (event.event !== "ipc_session_connected") return;
+      connected.add(event.sessionId);
+      if (connected.has(parent.id) && connected.has(print.id))
+        bothConnected.resolve();
+    },
+  });
+  await svc.start();
+  process.env.OMP_REMOTE_IPC_PATH = path;
+  process.env.OMP_REMOTE_STATE_DIR = stateDir;
+  process.env.OMP_REMOTE_MODE = "collab";
+
+  await loadBridge(print).fire("session_start");
+  await loadBridge(parent).fire("session_start");
+  await bothConnected.promise;
+  // Neither hosts a Collab room: both are listed unreachable once the grace expires.
+  fire();
+
+  const listed = svc.snapshot();
+  if (listed.t !== "sessions") throw new Error("expected a session list");
+  const shown = new Map(
+    listed.sessions.map((s) => [s.id, [s.reachable, s.headless]]),
+  );
+  expect(shown.get(print.id)).toEqual([false, true]);
+  expect(shown.get(parent.id)).toEqual([false, undefined]);
+});
+
 const parentArtifacts = join(
   sessionsDir,
   "2026-09-25T10-00-00-000Z_parent-session",

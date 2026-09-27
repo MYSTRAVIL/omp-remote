@@ -2,8 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MachineStore } from "@omp-remote/aggregator/src/machine-store";
-import { Config, saveConfig, secretPaths } from "@omp-remote/config";
-import { newIdentity } from "@omp-remote/crypto";
+import {
+  Config,
+  loadConfig,
+  saveConfig,
+  secretPaths,
+} from "@omp-remote/config";
+import { newIdentity, phoneCommitment } from "@omp-remote/crypto";
 import { PairingStore } from "@omp-remote/crypto/pairing-store";
 import { MachinesMsg } from "@omp-remote/protocol";
 import { z } from "zod";
@@ -145,4 +150,65 @@ test("run shows a fresh pairing code when one expires and keeps serving until st
   expect(await running).toBe(0);
   expect(err).toEqual([]);
   await expect(fetch(`${base}/auth/methods`)).rejects.toThrow();
+});
+
+test("run cut off the moment pairing reports success has already made the phone it trusted the one served", async () => {
+  const dir = await freshState();
+  await writeFile(join(dir, "index.html"), "<!doctype html>");
+  await writeCheapPassword(secretPaths.password, PASSWORD, Date.now() - 1000);
+  // No machine token yet: run must pair a phone before the agent can start.
+  await saveConfig(
+    Config.parse({
+      version: 1,
+      machineId: "box",
+      server: { listen: { host: "127.0.0.1", port: 0 }, webRoot: dir },
+      agent: { serverUrl: "http://127.0.0.1:1" },
+    }),
+  );
+
+  const phone = await newIdentity();
+  const listening = Promise.withResolvers<string>();
+  // The owner's phone claims the code as soon as it is shown.
+  const claim = async (code: string): Promise<void> => {
+    const base = await listening.promise;
+    const login = await fetch(`${base}/auth/login/password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password: PASSWORD }),
+    });
+    const { token } = z.object({ token: z.string() }).parse(await login.json());
+    const { rendezvousId, mac } = await phoneCommitment(code, phone.publicKey);
+    const res = await fetch(`${base}/pair/claim`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        rendezvousId,
+        phonePub: phone.publicKey,
+        phoneMac: mac,
+      }),
+    });
+    if (!res.ok) throw new Error(`claim failed: ${res.status}`);
+  };
+  const claimed = Promise.withResolvers<void>();
+  const { deps, err } = cliDeps({ sleep: () => claimed.promise });
+  const print = deps.print;
+  deps.print = (text) => {
+    print(text);
+    const url = /^\s+(http:\/\/127\.0\.0\.1:\d+)\s/.exec(text)?.[1];
+    if (url !== undefined) listening.resolve(url);
+    const code = /^Pairing code: (\S+)$/.exec(text)?.[1];
+    if (code !== undefined) claimed.resolve(claim(code));
+    // The process dies as the pairing says it succeeded.
+    if (text.startsWith("Paired box with phone")) throw new Error("killed");
+  };
+
+  expect(await main(["run"], deps)).toBe(1);
+  expect(err.join(" ")).toContain("killed");
+  const pairing = new PairingStore(secretPaths.pairing);
+  await pairing.load();
+  expect(pairing.peer(phone.publicKey)).toBeDefined();
+  expect((await loadConfig()).agent?.phoneId).toBe(phone.publicKey);
 });

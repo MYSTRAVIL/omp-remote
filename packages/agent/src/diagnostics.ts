@@ -1,5 +1,6 @@
 import type { NoticeReason } from "@omp-remote/protocol";
 import type { SecretAclFailure } from "@omp-remote/protocol/ipc";
+import type { ServedPhoneDivergence } from "./pair";
 
 export type ControlAction =
   | "prompt"
@@ -134,6 +135,17 @@ export type AgentDiagnostic =
       event: "uplink_not_started";
       code: "agent-token-not-found" | "pairing-not-found";
     }
+  | {
+      /**
+       * `agent.phoneId` names another phone than the newest one the pairing
+       * store trusts: a pairing stopped between trusting its phone and saving
+       * the config, or the config was edited. The uplink serves the newest
+       * trusted phone. `phone-not-trusted`: the store trusts no phone by that
+       * id; `newer-phone-trusted`: it trusted another one after it.
+       */
+      event: "uplink_phone_diverged";
+      code: ServedPhoneDivergence;
+    }
   | { event: "collab_discovery_started" | "collab_discovery_stopped" }
   | {
       event: "collab_discovery_failed";
@@ -189,6 +201,12 @@ export type AgentDiagnostic =
       sessionId: string;
     }
   | {
+      /** The phone had the session on screen, which closed its notice there:
+       *  no clear is pushed for it, nor its need again. */
+      event: "notify_push_seen";
+      sessionId: string;
+    }
+  | {
       /** A notice could not be sealed, or was too long to send even cut down. */
       event: "notify_push_failed";
       sessionId: string;
@@ -240,6 +258,7 @@ function levelOf(event: AgentDiagnostic): DiagnosticLevel {
     case "uplink_backlog_overflow":
     case "uplink_frames_dropped":
     case "uplink_not_started":
+    case "uplink_phone_diverged":
     case "collab_discovery_failed":
     case "collab_attach_failed":
     case "collab_not_started":
@@ -374,6 +393,7 @@ export function formatAgentDiagnostic(
         dropped: event.dropped,
       });
     case "uplink_not_started":
+    case "uplink_phone_diverged":
       return JSON.stringify({
         ...base(event.event, "host.uplink", level, now),
         code: event.code,
@@ -434,6 +454,7 @@ export function formatAgentDiagnostic(
         awaySec: event.awaySec,
       });
     case "notify_push_cleared":
+    case "notify_push_seen":
       return JSON.stringify({
         ...base(event.event, "host.notify", level, now),
         sessionId: event.sessionId,

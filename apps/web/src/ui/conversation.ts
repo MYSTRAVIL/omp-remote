@@ -7,6 +7,7 @@ import type {
 } from "../core/composer-preferences";
 import { decideSend } from "../core/connection-state";
 import type { OverlayEntry } from "../core/history-nav";
+import { prepareImage } from "../core/image-prep";
 import { noticeLabel, noticePreview, unwrapNotice } from "../core/notice";
 import {
   type FollowEvent,
@@ -294,6 +295,7 @@ class TranscriptView {
           view.node.className = `message message-${knownRole ? entry.role : "other"}`;
           view.node.classList.toggle("streaming", streaming);
           view.node.classList.toggle("pending", entry.pending !== undefined);
+          view.node.classList.toggle("failed", entry.failed === true);
         }
         const base =
           entry.role === "user" || entry.role === "assistant"
@@ -305,7 +307,9 @@ class TranscriptView {
           ? entry.pending === "steer"
             ? "steering in…"
             : "queued…"
-          : "";
+          : entry.failed
+            ? "not delivered"
+            : "";
         setText(
           view.label,
           base && pendingText
@@ -485,6 +489,17 @@ class Composer {
   readonly #offlineNotice = element("p", "composer-offline-notice");
   readonly #attachButton = button("+", "button attach-button");
   readonly #fileInput = element("input", "attach-input");
+  readonly #cameraInput = element("input", "attach-camera-input");
+  readonly #attachMenu = element("div", "composer-menu attach-menu");
+  #attachMenuOpen = false;
+  readonly #attachTake = button("Take photo", "button menu-item", "camera");
+  readonly #attachChoose = button(
+    "Choose existing",
+    "button menu-item",
+    "folder",
+  );
+  #attachMenuEvents: AbortController | undefined;
+  #attachMenuEntry: OverlayEntry | undefined;
   readonly #attachmentList = element("div", "composer-attachments");
   readonly #attachments = new Map<string, ComposerAttachment>();
   #attachSeq = 0;
@@ -583,9 +598,33 @@ class Composer {
     this.#send.setAttribute("aria-haspopup", "menu");
     this.#send.setAttribute("aria-controls", this.#menu.id);
     this.#send.setAttribute("aria-expanded", "false");
+    this.#attachMenu.id = uniqueId("attach-menu");
+    this.#attachMenu.setAttribute("role", "group");
+    this.#attachMenu.setAttribute("aria-label", "Attach image");
+    this.#attachMenu.tabIndex = -1;
+    this.#attachMenu.hidden = true;
+    if (this.#nativePopover) {
+      this.#attachMenu.setAttribute("popover", "auto");
+      this.#attachMenu.addEventListener("toggle", () => {
+        if (this.#attachMenuOpen && !this.#attachMenu.matches(":popover-open"))
+          this.#closeAttachMenu(false);
+      });
+    }
+    this.#attachButton.setAttribute("aria-haspopup", "menu");
+    this.#attachButton.setAttribute("aria-controls", this.#attachMenu.id);
+    this.#attachButton.setAttribute("aria-expanded", "false");
+    this.#attachMenu.append(this.#attachTake, this.#attachChoose);
     this.#interrupt.title = "Stop the current turn without sending your draft.";
     this.#aside.title =
       "Send at the next step boundary without interrupting the current tool batch.";
+    this.#attachTake.addEventListener("click", () => {
+      this.#closeAttachMenu(true);
+      this.#cameraInput.click();
+    });
+    this.#attachChoose.addEventListener("click", () => {
+      this.#closeAttachMenu(true);
+      this.#fileInput.click();
+    });
     this.#menu.append(this.#alternate, this.#aside, this.#interrupt);
 
     // Drawer: the shared picker's root list (Roles / Models / Effort) and Back.
@@ -609,7 +648,6 @@ class Composer {
     this.#drawer.addEventListener("close", () => {
       if (!this.#drawer.open) this.#closeDrawer();
     });
-
     // Model chip
     this.#modelChip.addEventListener("click", () => this.#openModelChip());
     this.#modelChip.replaceChildren(this.#chipName, this.#chipContext);
@@ -623,12 +661,22 @@ class Composer {
     // Shown only while it holds an attachment; the composer's flex gap keeps
     // the input-to-controls spacing the same either way.
     this.#attachmentList.hidden = true;
-    this.#attachButton.addEventListener("click", () => this.#fileInput.click());
+    this.#cameraInput.type = "file";
+    this.#cameraInput.accept = "image/*";
+    // An attribute, not the `capture` property, which desktop Chromium lacks.
+    this.#cameraInput.setAttribute("capture", "environment");
+    this.#cameraInput.hidden = true;
+    this.#attachButton.addEventListener("click", () => this.#openAttachMenu());
     this.#fileInput.addEventListener("change", () => {
       const files = this.#fileInput.files;
       if (files)
         for (const file of Array.from(files)) void this.#addAttachment(file);
       this.#fileInput.value = "";
+    });
+    this.#cameraInput.addEventListener("change", () => {
+      const file = this.#cameraInput.files?.[0];
+      if (file) void this.#addAttachment(file);
+      this.#cameraInput.value = "";
     });
     this.#fastMode.type = "button";
     this.#fastMode.addEventListener("click", () => {
@@ -636,23 +684,24 @@ class Composer {
       if (!sid || this.#fastModeEnabled === undefined) return;
       void this.handlers.onServiceTier(sid, !this.#fastModeEnabled);
     });
-
-    // Layout: textarea on top, control row below
+    // Layout: attachments, then textarea, then the control row
     const controlRow = element("div", "composer-row");
     const meta = element("div", "composer-meta");
     meta.append(this.#modelChip, this.#fastMode);
     controlRow.append(this.#attachButton, meta, this.#send);
     this.node.append(
       this.#offlineNotice,
-      this.input,
       this.#attachmentList,
+      this.input,
       this.#fileInput,
+      this.#cameraInput,
       controlRow,
       this.#ended,
       this.#continue,
       this.#pendingNotice,
       this.#status,
       this.#menu,
+      this.#attachMenu,
       this.#drawer,
     );
     this.node.addEventListener("submit", (event) => event.preventDefault());
@@ -1006,6 +1055,82 @@ class Composer {
     this.#send.setAttribute("aria-expanded", "false");
     if (restoreFocus) this.#send.focus({ preventScroll: true });
   }
+  #openAttachMenu(last = false): void {
+    if (this.#isEnded || this.#attachMenuOpen || this.#pendingBlocked) return;
+    this.#attachMenuOpen = true;
+    this.#attachMenu.hidden = false;
+    if (this.#nativePopover) this.#attachMenu.showPopover();
+    this.#attachButton.setAttribute("aria-expanded", "true");
+    this.#positionAttachMenu();
+    const items = [this.#attachTake, this.#attachChoose].filter(
+      (item) => !item.disabled,
+    );
+    (last ? items.at(-1) : items[0])?.focus({ preventScroll: true });
+    if (items.length === 0) this.#attachMenu.focus({ preventScroll: true });
+    this.#attachMenuEvents = new AbortController();
+    const options = { signal: this.#attachMenuEvents.signal };
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (
+          event.target instanceof Node &&
+          !this.#attachMenu.contains(event.target) &&
+          !this.#attachButton.contains(event.target)
+        )
+          this.#closeAttachMenu(false);
+      },
+      options,
+    );
+    document.addEventListener(
+      "focusin",
+      (event) => {
+        if (
+          event.target instanceof Node &&
+          !this.#attachMenu.contains(event.target) &&
+          !this.#attachButton.contains(event.target)
+        )
+          this.#closeAttachMenu(false);
+      },
+      options,
+    );
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        this.#closeAttachMenu(true);
+      },
+      options,
+    );
+    this.#attachMenuEntry = this.handlers.onOverlay(() =>
+      this.#closeAttachMenu(false),
+    );
+  }
+  #closeAttachMenu(restoreFocus: boolean): void {
+    if (!this.#attachMenuOpen) return;
+    this.#attachMenuOpen = false;
+    this.#attachMenuEvents?.abort();
+    this.#attachMenuEvents = undefined;
+    this.#attachMenuEntry?.dismiss();
+    this.#attachMenuEntry = undefined;
+    if (this.#nativePopover && this.#attachMenu.matches(":popover-open"))
+      this.#attachMenu.hidePopover();
+    this.#attachMenu.hidden = true;
+    this.#attachButton.setAttribute("aria-expanded", "false");
+    if (restoreFocus) this.#attachButton.focus({ preventScroll: true });
+  }
+  #positionAttachMenu(): void {
+    const anchor = this.#attachButton.getBoundingClientRect();
+    const menu = this.#attachMenu.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const left = (viewport?.offsetLeft ?? 0) + 8;
+    const top = (viewport?.offsetTop ?? 0) + 8;
+    const right = left + (viewport?.width ?? window.innerWidth) - 16;
+    const bottom = top + (viewport?.height ?? window.innerHeight) - 16;
+    const above = anchor.top - menu.height - 8;
+    this.#attachMenu.style.left = `${Math.max(left, Math.min(anchor.left, right - menu.width))}px`;
+    this.#attachMenu.style.top = `${Math.max(top, Math.min(above >= top ? above : anchor.bottom + 8, bottom - menu.height))}px`;
+  }
 
   #positionMenu(): void {
     const anchor = this.#send.getBoundingClientRect();
@@ -1185,6 +1310,8 @@ class Composer {
   async #addAttachment(file: File): Promise<void> {
     if (!file.type.startsWith("image/")) return;
     const id = `att-${++this.#attachSeq}`;
+    // Add to the map immediately so the attachment shows up and counts
+    // as a draft while preparation is happening.
     const objectUrl = URL.createObjectURL(file);
     const node = element("div", "attachment");
     const thumb = element("img", "attachment-thumb") as HTMLImageElement;
@@ -1210,12 +1337,32 @@ class Composer {
     this.#attachmentList.append(node);
     this.#attachmentList.hidden = false;
     this.#updateButtons();
+
+    // Prepare the image (async); swap in the prepared version when done.
+    let prepared = file;
+    try {
+      prepared = await prepareImage(file);
+    } catch {
+      prepared = file;
+    }
+    if (!this.#attachments.has(id)) return; // Removed while preparing
+
+    // Replace the original object URL with the prepared one.
+    if (prepared !== file) {
+      URL.revokeObjectURL(objectUrl);
+      const newObjectUrl = URL.createObjectURL(prepared);
+      thumb.src = newObjectUrl;
+      thumb.alt = prepared.name;
+      attachment.name = prepared.name;
+      attachment.objectUrl = newObjectUrl;
+    }
+
     const sessionId = this.input.dataset.sessionId;
     if (!sessionId) return;
     try {
       const resourceId = await this.handlers.onUpload(
         sessionId,
-        file,
+        prepared,
         (fraction) => {
           fill.style.width = `${Math.round(fraction * 100)}%`;
         },

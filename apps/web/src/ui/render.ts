@@ -238,12 +238,14 @@ interface MachineGroup {
   /** "Offline" beside the count while the relay no longer lists the machine. */
   offline: HTMLElement;
   list: HTMLElement;
-  /** Stands in for the rows while there are none: syncing, none live, or none reported. */
-  empty: HTMLElement;
-  emptyText: HTMLElement;
-  /** Why no session is live, and where earlier ones are: a live machine only. */
-  emptyHint: HTMLElement;
   projects: Map<string, ProjectGroup>;
+}
+
+/** The rail's notice that this phone has to pair with a machine again. */
+interface RepairNotice {
+  node: HTMLElement;
+  title: HTMLElement;
+  copy: HTMLElement;
 }
 
 /** Hidden per-state text so a resting row still announces its pulse to AT. */
@@ -253,17 +255,33 @@ const PULSE_LABEL: Record<SessionPulse, string> = {
   error: "Error",
 };
 
-/** Persistent navigation controls: stream redraws never replace focused rows. */
+/**
+ * Persistent navigation controls: stream redraws never replace focused rows.
+ * Only machines and projects with a session to show are listed, and above
+ * them each machine this phone has to pair with again, with a way to.
+ */
 class SessionNavigation {
   readonly node = element("nav", "tree");
   readonly #machines = new Map<string, MachineGroup>();
   readonly #sessions = new Map<string, SessionRow>();
+  readonly #repairs = new Map<string, RepairNotice>();
   readonly #empty = element("div", "tree-empty");
   readonly #connecting = element("div", "tree-empty tree-connecting");
+  /** Machines are listed, but none has a session to show (yet, while syncing). */
+  readonly #idle = element("div", "tree-empty tree-idle");
+  readonly #idleMark = element("div", "empty-mark");
+  readonly #idleTitle = element("h2", "empty-title");
+  readonly #idleCopy = element(
+    "p",
+    "empty-copy",
+    "Start one, or reopen a past one, with New session.",
+  );
   #handlers: ControlHandlers;
+  readonly #openSettings: () => void;
 
   constructor(handlers: ControlHandlers, openSettings: () => void) {
     this.#handlers = handlers;
+    this.#openSettings = openSettings;
     this.node.setAttribute("aria-label", "Machines, projects, and sessions");
     const mark = element("div", "empty-mark");
     mark.append(icon("machine"));
@@ -295,6 +313,9 @@ class SessionNavigation {
         "Your sessions appear here as soon as your paired machines report in.",
       ),
     );
+    this.#idleMark.append(icon("sessions"));
+    this.#idle.setAttribute("role", "status");
+    this.#idle.append(this.#idleMark, this.#idleTitle, this.#idleCopy);
   }
 
   update(
@@ -306,10 +327,25 @@ class SessionNavigation {
     selectedId?: string,
   ): void {
     this.#handlers = handlers;
+    const repairs: HTMLElement[] = [];
+    const unpaired = new Set<string>();
+    for (const machine of tree)
+      if (machine.unpaired === true) {
+        unpaired.add(machine.machineId);
+        repairs.push(this.#repair(machine));
+      }
+    for (const id of this.#repairs.keys())
+      if (!unpaired.has(id)) this.#repairs.delete(id);
     const machineIds = new Set<string>();
     const sessionIds = new Set<string>();
     const nodes: HTMLElement[] = [];
     for (const machine of tree) {
+      const total = machine.projects.reduce(
+        (sum, project) => sum + project.sessions.length,
+        0,
+      );
+      // Nothing to open there: New session still lists the machine.
+      if (total === 0) continue;
       machineIds.add(machine.machineId);
       let group = this.#machines.get(machine.machineId);
       if (!group) {
@@ -326,14 +362,6 @@ class SessionNavigation {
           "Not connected to the relay. Its last known sessions stay listed until it reconnects.";
         offline.hidden = true;
         const list = element("div", "machine-projects");
-        const empty = element("div", "machine-empty");
-        const emptyText = element("p", "machine-empty-text");
-        const emptyHint = element(
-          "p",
-          "machine-empty-hint",
-          "Only omp sessions started after the bridge was installed show here. Earlier ones are under New session › Past sessions.",
-        );
-        empty.append(emptyText, emptyHint);
         title.id = uniqueId("machine");
         node.setAttribute("aria-labelledby", title.id);
         header.append(icon("machine"), title, updating, offline, count);
@@ -345,9 +373,6 @@ class SessionNavigation {
           updating,
           offline,
           list,
-          empty,
-          emptyText,
-          emptyHint,
           projects: new Map(),
         };
         this.#machines.set(machine.machineId, group);
@@ -362,26 +387,11 @@ class SessionNavigation {
       else delete group.node.dataset.syncing;
       if (offline) group.node.dataset.offline = "";
       else delete group.node.dataset.offline;
-      const count = machine.projects.reduce(
-        (total, project) => total + project.sessions.length,
-        0,
-      );
-      setText(group.count, String(count));
+      setText(group.count, String(total));
       group.count.setAttribute(
         "aria-label",
-        `${count} ${count === 1 ? "session" : "sessions"}`,
+        `${total} ${total === 1 ? "session" : "sessions"}`,
       );
-      // Rows on their way are not "0 sessions".
-      group.count.hidden = count === 0 && syncing && !offline;
-      setText(
-        group.emptyText,
-        offline
-          ? "No sessions reported."
-          : syncing
-            ? "Syncing sessions…"
-            : "No live sessions.",
-      );
-      group.emptyHint.hidden = syncing || offline;
       const projectNames = new Set<string>();
       const projects: HTMLElement[] = [];
       for (const project of machine.projects) {
@@ -450,7 +460,6 @@ class SessionNavigation {
       for (const name of group.projects.keys()) {
         if (!projectNames.has(name)) group.projects.delete(name);
       }
-      if (projects.length === 0) projects.push(group.empty);
       syncChildren(group.list, projects);
       nodes.push(group.node);
     }
@@ -463,9 +472,56 @@ class SessionNavigation {
         this.#sessions.delete(id);
       }
     }
-    if (nodes.length === 0)
+    // No machine at all: connecting, or the pair empty state. No row to list:
+    // one status line, unless every machine is one to pair again, whose
+    // notices say all there is.
+    if (nodes.length === 0 && tree.length === 0)
       nodes.push(connecting ? this.#connecting : this.#empty);
-    syncChildren(this.node, nodes);
+    else if (nodes.length === 0 && unpaired.size < tree.length) {
+      // Rows on their way are not "no sessions".
+      const syncing = tree.some(
+        (machine) => machine.syncing === true && machine.offline !== true,
+      );
+      this.#idleMark.classList.toggle("connecting-mark", syncing);
+      setText(
+        this.#idleTitle,
+        syncing ? "Syncing sessions…" : "No live sessions.",
+      );
+      this.#idleCopy.hidden = syncing;
+      nodes.push(this.#idle);
+    }
+    syncChildren(this.node, [...repairs, ...nodes]);
+  }
+
+  /**
+   * The notice for a machine whose host-agent cannot open this phone's lines:
+   * it serves another pairing, so this phone has to pair with it again. Its
+   * button opens Settings, where a new code is entered.
+   */
+  #repair(machine: MachineNode): HTMLElement {
+    let notice = this.#repairs.get(machine.machineId);
+    if (!notice) {
+      const node = element("section", "tree-repair");
+      node.setAttribute("role", "status");
+      const title = element("h2", "tree-repair-title");
+      title.id = uniqueId("repair");
+      node.setAttribute("aria-labelledby", title.id);
+      const copy = element("p", "tree-repair-copy");
+      const pair = button("Re-pair", "button secondary tree-repair-action");
+      pair.addEventListener("click", this.#openSettings);
+      node.append(title, copy, pair);
+      notice = { node, title, copy };
+      this.#repairs.set(machine.machineId, notice);
+    }
+    setText(
+      notice.title,
+      `This phone is no longer paired with ${machine.label}`,
+    );
+    setText(
+      notice.copy,
+      `${machine.label} serves another pairing now, so nothing this phone sends reaches it. Run omp-remote pair there and enter the code it shows.`,
+    );
+    return notice.node;
   }
 }
 
@@ -827,6 +883,7 @@ export function renderTree(
     sessionPulse,
     orbState,
     connecting,
+    undefined,
   );
   workspace.showTree();
 }
@@ -879,6 +936,7 @@ export function renderSpawnPending(
       navigation.sessionPulse,
       navigation.orbState,
       navigation.connecting === true,
+      undefined,
     );
   workspace.showSpawnPending(pending, handlers);
 }

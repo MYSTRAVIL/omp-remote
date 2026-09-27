@@ -1,7 +1,15 @@
 /// <reference lib="dom" />
 import type { PushEnrolment, PushState } from "../core/push-subscribe";
-import { type Switch, preferenceSwitch, toggleSwitch } from "./choices";
+import {
+  type Dropdown,
+  type Switch,
+  preferenceDropdown,
+  preferenceSwitch,
+  toggleSwitch,
+} from "./choices";
 import { button, element, setText, uniqueId } from "./dom";
+
+type NotifyDetail = "private" | "session" | "preview";
 
 /** The line under the switch: what push really does on this device now. */
 function describeState(state: PushState, enabled: boolean): string {
@@ -38,6 +46,7 @@ export class NotificationSettings {
   readonly #switch: Switch;
   readonly #retry = button("Try again", "button secondary push-retry");
   readonly #quiet: Switch & { sync(): void };
+  readonly #detail: Dropdown<NotifyDetail> & { sync(): void };
   readonly #status = element("p", "field-hint preference-status");
 
   constructor(push: PushEnrolment) {
@@ -72,12 +81,25 @@ export class NotificationSettings {
       "OMP Remote hides new notifications while it is on screen on this device. After you switch away, they show as usual.",
     );
 
+    this.#detail = preferenceDropdown(
+      "Notification detail",
+      [
+        { value: "private", label: "Private" },
+        { value: "session", label: "Session" },
+        { value: "preview", label: "Preview" },
+      ] as const,
+      () => preferences.notifyDetail,
+      (level) => preferences.setNotifyDetail(level),
+      this.#status,
+      "Private: only that something needs you. Session: which session and why. Preview: also the question or last reply.",
+    );
+
     this.node.append(
       heading,
       element(
         "p",
         "section-copy",
-        "Each notification names the session that needs you, its machine and what it is waiting for. It is end-to-end encrypted, so the relay passes it on without reading it, and it goes away once the session is answered.",
+        "Notifications are end-to-end encrypted, so the relay passes them on without reading them, and each goes away once its session is answered. Notification detail sets how much one shows on this device's lock screen.",
       ),
       element(
         "p",
@@ -86,6 +108,7 @@ export class NotificationSettings {
       ),
       this.#switch.node,
       this.#quiet.node,
+      this.#detail.node,
       this.#status,
     );
     this.update();
@@ -94,6 +117,7 @@ export class NotificationSettings {
   /** Settings reopened: the saved choices, what push does now, and no outcome from last time. */
   reset(): void {
     this.#quiet.sync();
+    this.#detail.sync();
     this.update();
     setText(this.#status, "");
   }

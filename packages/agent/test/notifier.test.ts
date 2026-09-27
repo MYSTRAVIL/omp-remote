@@ -285,6 +285,59 @@ test.each(answers)(
   },
 );
 
+/** The phone had s1 on screen, which closed its notification there. */
+const seenOnPhone = { t: "noticeSeen", sessionId: "s1" } as const;
+
+test("a notice the phone closed itself gets no clear, before or after its need is answered; the next need is pushed and cleared as usual", async () => {
+  for (const answeredFirst of [false, true]) {
+    const h = harness();
+    h.feed(question);
+    expect(await h.notices()).toEqual([questionNotice]);
+    // A clear would find nothing to close there: a push that shows nothing.
+    if (answeredFirst) h.feed(questionEnded);
+    h.notifier.command(seenOnPhone);
+    if (!answeredFirst) h.feed(questionEnded);
+    expect(await h.notices()).toEqual([questionNotice]);
+    expect(h.diagnostics.at(-1)).toEqual({
+      event: "notify_push_seen",
+      sessionId: "s1",
+    });
+
+    h.feed({
+      t: "interaction",
+      sessionId: "s1",
+      id: "ap1",
+      payload: { kind: "approval", tool: "bash", choices: ["Approve", "Deny"] },
+    });
+    const approvalNotice = {
+      ...questionNotice,
+      reason: "approval" as const,
+      detail: "bash",
+    };
+    expect(await h.notices()).toEqual([questionNotice, approvalNotice]);
+    h.feed({
+      t: "interactionEnd",
+      sessionId: "s1",
+      id: "ap1",
+      reason: "resolved",
+    });
+    expect(await h.notices()).toEqual([
+      questionNotice,
+      approvalNotice,
+      cleared,
+    ]);
+  }
+});
+
+test("a need still held when the phone has its session on screen is pushed once the user is away", async () => {
+  const h = harness({ idle: 30_000, awaySec: 120 });
+  h.feed(question);
+  h.notifier.command(seenOnPhone);
+  h.setIdle(120_000);
+  h.scheduler.fire();
+  expect(await h.notices()).toEqual([questionNotice]);
+});
+
 test("an approval notice names the tool, with the reason when it has one", async () => {
   const h = harness();
   h.feed(

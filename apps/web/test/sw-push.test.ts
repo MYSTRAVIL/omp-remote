@@ -6,10 +6,13 @@ import {
   serverSessionKeys,
 } from "@omp-remote/crypto";
 import { type NotifyNotice, sealNotice } from "@omp-remote/protocol";
+import type { BadgeApi } from "../src/core/app-badge";
 import {
   PREFS_CACHE,
+  readNotifyDetail,
   readNotifyKeys,
   readQuietWhileOpen,
+  saveNotifyDetail,
   saveNotifyKeys,
   staleShellCaches,
 } from "../src/core/sw-caches";
@@ -22,7 +25,9 @@ import {
   type NotificationSpec,
   type OpenSessionMessage,
   QUIET_TAG,
+  SETTLED_BODY,
   type WindowClientLike,
+  closeSettled,
   handlePush,
   openFromNotification,
   openSessionTarget,
@@ -36,6 +41,16 @@ interface Shown {
   closed: boolean;
 }
 
+function expectSingleNotification(shown: Shown[]): {
+  title: string;
+  options: NotificationSpec;
+} {
+  expect(shown).toHaveLength(1);
+  const first = shown[0];
+  if (first === undefined) throw new Error("no notification");
+  return { title: first.title, options: first.options };
+}
+
 /** A registration keeping every notification it showed, open until closed. */
 function fakeRegistration() {
   const shown: Shown[] = [];
@@ -46,10 +61,17 @@ function fakeRegistration() {
         if (earlier.options.tag === options.tag) earlier.closed = true;
       shown.push({ title, options, closed: false });
     },
-    async getNotifications({ tag }) {
+    async getNotifications(filter) {
       return shown
-        .filter(({ closed, options }) => !closed && options.tag === tag)
+        .filter(({ closed, options }) => {
+          if (closed) return false;
+          if (filter === undefined) return true;
+          return options.tag === filter.tag;
+        })
         .map((notification) => ({
+          tag: notification.options.tag,
+          title: notification.title,
+          data: notification.options.data,
           close: () => {
             notification.closed = true;
           },
@@ -139,7 +161,13 @@ const QUIETED = {
  * the agent seals notices with `notifyKey(tx)`; the page saved
  * `notifyKey(rx)` for the worker, with the name it shows ("Laptop").
  */
-async function pairedWorker(opts: { quietWhileOpen?: boolean } = {}) {
+async function pairedWorker(
+  opts: {
+    quietWhileOpen?: boolean;
+    notifyDetail?: "private" | "session" | "preview";
+    badge?: BadgeApi;
+  } = {},
+) {
   const phone = await newIdentity();
   const host = await newIdentity();
   const phoneKeys = await clientSessionKeys(phone, host.publicKey);
@@ -150,6 +178,9 @@ async function pairedWorker(opts: { quietWhileOpen?: boolean } = {}) {
     storage.caches,
     new Map([["m1", { key: await notifyKey(phoneKeys.rx), label: "Laptop" }]]),
   );
+  if (opts.notifyDetail !== undefined) {
+    await saveNotifyDetail(storage.caches, opts.notifyDetail);
+  }
   const { registration, shown } = fakeRegistration();
   const push = (
     notice: NotifyNotice,
@@ -162,6 +193,8 @@ async function pairedWorker(opts: { quietWhileOpen?: boolean } = {}) {
           registration,
           quietWhileOpen: async () => opts.quietWhileOpen ?? true,
           notifyKeys: () => readNotifyKeys(storage.caches),
+          notifyDetail: () => readNotifyDetail(storage.caches),
+          badge: opts.badge,
         },
         JSON.stringify(envelope),
       ),
@@ -221,6 +254,111 @@ test("an attention notice shows its session's notification: named after it, wher
   ]);
 });
 
+test("notification detail: preview shows full text (default)", async () => {
+  const { push, shown } = await pairedWorker();
+  await push({
+    kind: "attention",
+    sessionId: "s1",
+    reason: "question",
+    title: "Fix the login bug",
+    project: "omp-remote",
+    detail: "Which branch should I use?",
+  });
+  const { title, options } = expectSingleNotification(shown);
+  expect(title).toBe("Fix the login bug");
+  expect(options.body).toBe(
+    "Laptop · omp-remote\nQuestion: Which branch should I use?",
+  );
+});
+
+test("notification detail: session shows reason only, no detail text", async () => {
+  const { push, shown } = await pairedWorker({ notifyDetail: "session" });
+  await push({
+    kind: "attention",
+    sessionId: "s1",
+    reason: "question",
+    title: "Fix the login bug",
+    project: "omp-remote",
+    detail: "Which branch should I use?",
+  });
+  const { title, options } = expectSingleNotification(shown);
+  expect(title).toBe("Fix the login bug");
+  expect(options.body).toBe("Laptop · omp-remote\nQuestion");
+});
+
+test("notification detail: private shows generic title and body", async () => {
+  const { push, shown } = await pairedWorker({ notifyDetail: "private" });
+  await push({
+    kind: "attention",
+    sessionId: "s1",
+    reason: "question",
+    title: "Fix the login bug",
+    project: "omp-remote",
+    detail: "Which branch should I use?",
+  });
+  const { title, options } = expectSingleNotification(shown);
+  expect(title).toBe(ATTENTION_TITLE);
+  expect(options.body).toBe(ATTENTION_BODY);
+});
+
+test("notification detail: tag and data are identical across levels", async () => {
+  const notice = {
+    kind: "attention" as const,
+    sessionId: "s1",
+    reason: "question" as const,
+    title: "Fix the login bug",
+    project: "omp-remote",
+    detail: "Which branch?",
+  };
+
+  const levels = ["private", "session", "preview"] as const;
+  const tags: string[] = [];
+  const serializedData: string[] = [];
+  for (const level of levels) {
+    const { push, shown } = await pairedWorker({ notifyDetail: level });
+    await push(notice);
+    const { options } = expectSingleNotification(shown);
+    tags.push(options.tag);
+    serializedData.push(JSON.stringify(options.data));
+  }
+  expect(tags.every((t) => t === tags[0])).toBe(true);
+  expect(serializedData.every((d) => d === serializedData[0])).toBe(true);
+  expect(tags[0]).toBe("session:m1:s1");
+});
+
+test("default detail is preview when pref is missing", async () => {
+  const { push, shown } = await pairedWorker();
+  await push({
+    kind: "attention",
+    sessionId: "s1",
+    reason: "question",
+    title: "Fix bug",
+    project: "app",
+    detail: "Which branch?",
+  });
+  const { title, options } = expectSingleNotification(shown);
+  expect(title).toBe("Fix bug");
+  expect(options.body).toContain("Which branch?");
+});
+
+test("unreadable detail pref falls back to preview", async () => {
+  const { push, shown, storage } = await pairedWorker();
+  // Corrupt the pref: save an invalid value
+  const prefs = await storage.caches.open(PREFS_CACHE);
+  await prefs.put("/__prefs/notify-detail", new Response("garbage"));
+  await push({
+    kind: "attention",
+    sessionId: "s1",
+    reason: "question",
+    title: "Fix bug",
+    project: "app",
+    detail: "Which branch?",
+  });
+  const { title, options } = expectSingleNotification(shown);
+  expect(title).toBe("Fix bug");
+  expect(options.body).toContain("Which branch?");
+});
+
 test("with quiet on, an attention notice while a window is on screen is shown silently and closed at once", async () => {
   const { push, shown } = await pairedWorker();
   await push(
@@ -259,13 +397,13 @@ test("a clear notice closes only its session's notification, and still shows and
         registration,
         quietWhileOpen: async () => true,
         notifyKeys: async () => new Map(),
+        notifyDetail: () => readNotifyDetail(fakeCaches().caches),
       },
       undefined,
     );
-
     await push({ kind: "clear", sessionId: "s1" }, windows);
-    const open = shown.filter(({ closed }) => !closed);
-    expect(open.map(({ options }) => options.tag)).toEqual([
+    const openAfterClear = shown.filter(({ closed }) => !closed);
+    expect(openAfterClear.map(({ options }) => options.tag)).toEqual([
       "session:m1:s2",
       ATTENTION_TAG,
     ]);
@@ -306,6 +444,7 @@ test("a push this device can't open raises the generic notification", async () =
         registration,
         quietWhileOpen: async () => true,
         notifyKeys: () => readNotifyKeys(storage.caches),
+        notifyDetail: () => readNotifyDetail(storage.caches),
       },
       payload,
     );
@@ -331,6 +470,7 @@ test("a failed window lookup still raises the generic notification", async () =>
       registration,
       quietWhileOpen: async () => true,
       notifyKeys: async () => new Map(),
+      notifyDetail: () => readNotifyDetail(fakeCaches().caches),
     },
     undefined,
   );
@@ -346,6 +486,7 @@ test("with quiet on, a push while a window is on screen is shown silently and cl
     registration,
     quietWhileOpen: async () => true,
     notifyKeys: async () => new Map(),
+    notifyDetail: () => readNotifyDetail(fakeCaches().caches),
   });
   // An attention notification from before the app came on screen.
   await handlePush(deps([]), undefined);
@@ -369,6 +510,7 @@ test("with quiet off, a push while the app is on screen raises its notification"
       registration,
       quietWhileOpen: async () => false,
       notifyKeys: async () => new Map(),
+      notifyDetail: () => readNotifyDetail(fakeCaches().caches),
     },
     undefined,
   );
@@ -400,6 +542,7 @@ test("a device that never saved the quiet choice, or can't read it, has quiet on
         registration,
         quietWhileOpen: () => readQuietWhileOpen(storage.caches),
         notifyKeys: () => readNotifyKeys(storage.caches),
+        notifyDetail: () => readNotifyDetail(storage.caches),
       },
       undefined,
     );
@@ -416,45 +559,184 @@ test("activating a deploy deletes the shells of earlier deploys and keeps the pr
   ).toEqual(["omp-remote-shell-1111111"]);
 });
 
-test("a tap on a session's notification opens that session in the open window", async () => {
+test("a tap on a session's notification, waiting or settled, opens that session in the open window", async () => {
   const { window, seen } = recordingWindow();
-  const { clients, opened } = recordingClients([window]);
+  const { clients } = recordingClients([window]);
   await openFromNotification(clients, { machineId: "m1", sessionId: "s1" });
-  expect(seen).toEqual({
-    focused: 1,
-    messages: [{ type: "open-session", machineId: "m1", sessionId: "s1" }],
+  await openFromNotification(clients, {
+    machineId: "m1",
+    sessionId: "s2",
+    settled: true,
   });
-  expect(opened).toEqual([]);
+  expect(seen.focused).toBe(2);
+  expect(seen.messages).toEqual([
+    { type: "open-session", machineId: "m1", sessionId: "s1" },
+    { type: "open-session", machineId: "m1", sessionId: "s2" },
+  ]);
 });
 
 test("a tap with no window open starts a new one on the session", async () => {
   const { clients, opened } = recordingClients([]);
   await openFromNotification(clients, { machineId: "m1", sessionId: "s1" });
-  expect(opened).toEqual(["/?open=m1:s1"]);
+  expect(opened).toEqual([
+    openSessionUrl({ machineId: "m1", sessionId: "s1" }),
+  ]);
 });
 
 test("a tap on the generic notification just brings the app forward", async () => {
   const { window, seen } = recordingWindow();
-  await openFromNotification(recordingClients([window]).clients, null);
-  expect(seen).toEqual({ focused: 1, messages: [] });
+  const { clients } = recordingClients([window]);
+  await openFromNotification(clients, {});
+  expect(seen.focused).toBe(1);
+  expect(seen.messages).toEqual([]);
 
+  // With no window open, it opens one on the list.
   const none = recordingClients([]);
   await openFromNotification(none.clients, undefined);
   expect(none.opened).toEqual(["/"]);
 });
 
 test("the page reads a tapped session from its address only for a machine paired here", () => {
-  const address = (machineId: string, sessionId: string) =>
-    openSessionUrl({ machineId, sessionId }).slice(1);
-  expect(openSessionTarget(address("m1", "s1"), ["m0", "m1"])).toEqual({
+  expect(openSessionTarget("?open=m1:s1", ["m1", "m2"])).toEqual({
     machineId: "m1",
     sessionId: "s1",
   });
-  // A machine id with a colon of its own still splits where it ends.
-  expect(openSessionTarget(address("lab:2", "s:1"), ["lab", "lab:2"])).toEqual({
-    machineId: "lab:2",
-    sessionId: "s:1",
+  // A machine not paired here: the address is read, but the notification is not opened.
+  expect(openSessionTarget("?open=m3:s1", ["m1", "m2"])).toBeUndefined();
+  // A machine id may contain colons: the longest paired id that fits wins.
+  expect(openSessionTarget("?open=a:b:s1", ["a", "a:b"])).toEqual({
+    machineId: "a:b",
+    sessionId: "s1",
   });
-  expect(openSessionTarget(address("m9", "s1"), ["m1"])).toBeUndefined();
+  // The address a tapped notification opens reads back as its session, colons
+  // in either id and all.
+  const address = openSessionUrl({ machineId: "lab:2", sessionId: "s:1" });
+  expect(
+    openSessionTarget(address.slice(address.indexOf("?")), ["lab", "lab:2"]),
+  ).toEqual({ machineId: "lab:2", sessionId: "s:1" });
   expect(openSessionTarget("", ["m1"])).toBeUndefined();
+});
+
+/** An app badge recording each number it is set to; a clear is 0. */
+function recordingBadge(opts: { refuse?: boolean } = {}) {
+  const set: number[] = [];
+  const badge: BadgeApi = {
+    async setAppBadge(contents) {
+      if (opts.refuse) throw new Error("not allowed");
+      set.push(contents ?? 0);
+    },
+    async clearAppBadge() {
+      if (opts.refuse) throw new Error("not allowed");
+      set.push(0);
+    },
+  };
+  return { badge, set };
+}
+
+test("each session notification shown or closed sets the app badge to the sessions with one showing", async () => {
+  const { badge, set } = recordingBadge();
+  const { push, registration } = await pairedWorker({ badge });
+  const attention = (
+    sessionId: string,
+    windows: readonly { visible: boolean }[] = [],
+  ) =>
+    push(
+      {
+        kind: "attention",
+        sessionId,
+        reason: "idle",
+        title: sessionId,
+        project: "p",
+        detail: "",
+      },
+      windows,
+    );
+  await attention("s1");
+  await attention("s2");
+  // The same session's next notice replaces its notification.
+  await attention("s2");
+  // The generic notification names no session, and a quieted push shows
+  // none (the page on screen keeps the badge): neither sets it.
+  await handlePush(
+    {
+      clients: fakeClients([]),
+      registration,
+      quietWhileOpen: async () => true,
+      notifyKeys: async () => new Map(),
+      notifyDetail: async () => "preview",
+      badge,
+    },
+    undefined,
+  );
+  await attention("s3", [{ visible: true }]);
+  expect(set).toEqual([1, 2, 2]);
+
+  await push({ kind: "clear", sessionId: "s1" });
+  await push({ kind: "clear", sessionId: "s2" });
+  expect(set).toEqual([1, 2, 2, 1, 0]);
+});
+
+test("a worker whose badge is refused still shows and closes notifications", async () => {
+  const { badge, set } = recordingBadge({ refuse: true });
+  const { push, shown } = await pairedWorker({ badge });
+  for (const sessionId of ["s1", "s2"])
+    await push({
+      kind: "attention",
+      sessionId,
+      reason: "idle",
+      title: "T",
+      project: "p",
+      detail: "",
+    });
+  await push({ kind: "clear", sessionId: "s1" });
+  expect(set).toEqual([]);
+  expect(shown[0]?.options.tag).toBe("session:m1:s1");
+  expect(shown[0]?.closed).toBe(true);
+});
+
+test("a clear for the last notification showing says its session no longer waits, so the browser never shows its own contentless one", async () => {
+  const { badge, set } = recordingBadge();
+  const { push, registration, shown } = await pairedWorker({ badge });
+  const open = () => shown.filter(({ closed }) => !closed);
+  const attention = (sessionId: string) =>
+    push({
+      kind: "attention",
+      sessionId,
+      reason: "question",
+      title: `Fix ${sessionId}`,
+      project: "omp-remote",
+      detail: "Which branch?",
+    });
+  await attention("s1");
+  // No window of the app on screen: closing it would leave none showing.
+  await push({ kind: "clear", sessionId: "s1" });
+  expect(open()).toEqual([
+    {
+      title: "Fix s1",
+      options: {
+        body: SETTLED_BODY,
+        tag: "session:m1:s1",
+        silent: true,
+        ...ICONS,
+        data: { machineId: "m1", sessionId: "s1", settled: true },
+      },
+      closed: false,
+    },
+  ]);
+
+  // The next notification to show takes its place.
+  await attention("s2");
+  expect(open().map(({ options }) => options.tag)).toEqual(["session:m1:s2"]);
+  // With a window of the app on screen, the browser needs none showing.
+  await push({ kind: "clear", sessionId: "s2" }, [{ visible: true }]);
+  expect(open()).toEqual([]);
+  // A session that no longer waits counts for nothing on the badge.
+  expect(set).toEqual([1, 0, 1, 0]);
+
+  // The page on screen closes one left from before.
+  await attention("s3");
+  await push({ kind: "clear", sessionId: "s3" });
+  expect(open()).toHaveLength(1);
+  await closeSettled(registration);
+  expect(open()).toEqual([]);
 });

@@ -242,6 +242,21 @@ test("a name saved in Settings shows in the rail; saving it empty restores the m
   });
   const store = new AppStore();
   store.setMachineList(["m1"]);
+  // The rail lists a machine only while it has a session.
+  store.applyFrame("m1", {
+    t: "sessions",
+    sessions: [
+      {
+        id: "s1",
+        cwd: "/work/app",
+        project: "app",
+        model: "m",
+        title: "T",
+        pid: 1,
+        startedAt: 1,
+      },
+    ],
+  });
   const { root, draw } = workspace(() => store.tree(), {
     onRenameMachine: (machineId, label) => {
       const saved = labels.rename(machineId, label);

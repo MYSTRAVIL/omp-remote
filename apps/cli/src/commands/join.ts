@@ -11,8 +11,9 @@ import { pairPhone } from "./pair";
 
 /**
  * `omp-remote join <url>`: make this machine an agent of the server at `url`
- * and pair a phone with it. The config is written once the pairing succeeds,
- * so a failed join leaves none behind and can simply run again.
+ * and pair a phone with it. The config is written as the pairing trusts the
+ * phone, before it reports success, so a failed join leaves none behind and
+ * can simply run again.
  */
 export async function join(args: string[], deps: CliDeps): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -39,16 +40,22 @@ export async function join(args: string[], deps: CliDeps): Promise<number> {
       await deps.ask("Machine name", defaultMachineName(deps.hostname())),
     );
 
-  const paired = await pairPhone(
-    { machineId, serverUrl, phoneUrl: baseUrl, renew: false },
-    deps,
-  );
-  await saveConfig(
-    Config.parse({
-      version: 1,
+  await pairPhone(
+    {
       machineId,
-      agent: { serverUrl, phoneId: paired.phonePub },
-    }),
+      serverUrl,
+      phoneUrl: baseUrl,
+      renew: false,
+      serve: (phonePub) =>
+        saveConfig(
+          Config.parse({
+            version: 1,
+            machineId,
+            agent: { serverUrl, phoneId: phonePub },
+          }),
+        ),
+    },
+    deps,
   );
   deps.print(`Joined ${baseUrl} as ${machineId}; wrote ${configPath()}.`);
   deps.print(

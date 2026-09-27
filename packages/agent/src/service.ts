@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import {
+  type AttentionFrame,
   type ClientMessage,
   type CloseSessionFrame,
   DEV_CLIENT_PROTOCOL,
@@ -16,6 +17,7 @@ import {
   type Scheduler,
   type SessionMeta,
   type UplinkFrame,
+  attentionSettledBy,
   defaultScheduler,
   devClientSecretOffered,
 } from "@omp-remote/protocol";
@@ -24,6 +26,7 @@ import type { Server, ServerWebSocket } from "bun";
 import { type AgentDiagnosticSink, noAgentDiagnostic } from "./diagnostics";
 import { findStoredSession, listStoredSessions } from "./history";
 import { NotifyPolicy } from "./notify-policy";
+import { PromptTracker } from "./prompt-tracker";
 import { Registry } from "./registry";
 import { type SpawnHandle, type SpawnOptions, spawnSession } from "./spawn";
 
@@ -112,6 +115,29 @@ const HISTORY_MAX = 1000;
 /** A session's retained frames, keyed `m:<msgId>` / `t:<callId>` / `state` /
  *  `jobs`, coalesced to the latest per key with insertion order kept for replay. */
 type SessionHistory = Map<string, UplinkFrame>;
+
+/**
+ * True when `frame` streams new text into a retained reply that a later user
+ * message overtook: omp took that message in while the reply still streamed,
+ * so the text arriving now answers it. The phone moves such a reply below the
+ * user message (`reduceTranscript`); moving its retained frame to the end
+ * keeps a replay in the same order.
+ */
+function overtaken(
+  history: SessionHistory,
+  key: string,
+  frame: MsgFrame,
+): boolean {
+  if (frame.phase === "end" || frame.role === "user") return false;
+  const retained = history.get(key);
+  if (retained?.t !== "msg" || retained.text === frame.text) return false;
+  let later = false;
+  for (const [k, f] of history) {
+    if (later && f.t === "msg" && f.role === "user") return true;
+    if (k === key) later = true;
+  }
+  return false;
+}
 /** Per-session budget (base64 chars) for retained downlink media. Enough for a
  *  handful of screenshots; oldest images evict first so a reconnecting phone
  *  can still fetch recent images without unbounded host memory. */
@@ -151,10 +177,18 @@ export class AgentService {
    *  a (re)connecting client is asked again. Settled by `interactionEnd` or by a
    *  forwarded phone answer. */
   #pending = new Map<string, Map<string, InteractionFrame>>();
+  /** Per session, the latest `attention` no frame has settled yet (see
+   *  `attentionSettledBy`), replayed so a (re)connecting client still sees
+   *  what the session waits on the user for. */
+  #waits = new Map<string, AttentionFrame>();
+  /** Per session, the last `at` an attention was stamped with. */
+  #waitStamps = new Map<string, number>();
   /** Per-session retained images (init + chunks). A (re)connecting client's
    *  replay only announces them (`deferred`); `mediaFetch` sends one in full.
    *  Bounded per session by MEDIA_RETAIN_BYTES. */
   #media = new Map<string, Map<string, RetainedMedia>>();
+  /** Phone prompts delivered to each session's omp and not yet taken in. */
+  readonly #prompts = new PromptTracker();
   #clients = new Set<ServerWebSocket<undefined>>();
   #sinks = new Set<(msg: ClientMessage) => void>();
   #http: Server<undefined> | undefined;
@@ -326,6 +360,7 @@ export class AgentService {
       }
       if (
         f.t === "state" ||
+        f.t === "attention" ||
         f.t === "msg" ||
         f.t === "tool" ||
         f.t === "jobs" ||
@@ -427,15 +462,20 @@ export class AgentService {
     );
   }
 
-  /** A (re)connecting client's backfill: the session list, then per live
-   *  session its retained transcript (coalesced) and latest state, the
-   *  interactions still awaiting an answer, and a `deferred` announcement of each
-   *  retained image — never its chunks, which the phone pulls with `mediaFetch`
-   *  when it shows the image. History and the footer render at once instead of
-   *  waiting for new activity. The phone triggers this by sending `sync` on
-   *  connect/reconnect; the uplink also sends it on every (re)open. */
-  replay(): ClientMessage[] {
-    const out: ClientMessage[] = [this.snapshot()];
+  /** A (re)connecting client's backfill, bracketed by `replayStart` and
+   *  `replayEnd` so a client can retire what it shows that the replay no
+   *  longer carries: the session list, then per live session its retained
+   *  transcript (coalesced) and latest state, the interactions still awaiting
+   *  an answer, a `deferred` announcement of each retained image — never its
+   *  chunks, which the phone pulls with `mediaFetch` when it shows the image —
+   *  and last the attention still unsettled. The phone triggers this by
+   *  sending `sync` on connect/reconnect; the uplink also sends it on every
+   *  (re)open, and the loopback dev client gets it on connect. `replayEnd`
+   *  names the `sync` it answers and lists the phone prompts omp has yet to
+   *  take in, so that phone can tell which of its sends never arrived. */
+  replay(syncId?: string): ClientMessage[] {
+    const out: ClientMessage[] = [{ t: "replayStart" }, this.snapshot()];
+    const queued = this.#prompts.queued();
     for (const { meta } of this.#registry.list()) {
       const history = this.#history.get(meta.id);
       if (history) for (const frame of history.values()) out.push(frame);
@@ -445,7 +485,14 @@ export class AgentService {
       if (media)
         for (const { init } of media.values())
           out.push({ ...init, deferred: true });
+      const wait = this.#waits.get(meta.id);
+      if (wait) out.push(wait);
     }
+    out.push({
+      t: "replayEnd",
+      ...(syncId === undefined ? {} : { syncId }),
+      ...(queued.length === 0 ? {} : { queued }),
+    });
     return out;
   }
 
@@ -469,7 +516,8 @@ export class AgentService {
    * replies. A Collab session without prompt control reports a visible error
    * instead of silently collapsing Queue into Steer. A `mediaFetch` is answered
    * here, from the retained media, a `historyRequest` from omp's session store,
-   * and a `notifyPolicy` is kept (and saved) for the notifier. The switch is
+   * and a `notifyPolicy` is kept (and saved) for the notifier, which alone
+   * reads a `noticeSeen` (see the uplink). The switch is
    * exhaustive: a new `DownlinkFrame` variant fails to compile until it is
    * routed here.
    */
@@ -511,6 +559,9 @@ export class AgentService {
         // Where the user is told, never what a session does: no session, no
         // control outcome. Saving never rejects; a failure is reported.
         void this.#notifyPolicy.set(frame.awaySec);
+        return;
+      case "noticeSeen":
+        // The uplink's notifier reads it; no session is told.
         return;
       default:
         frame satisfies never;
@@ -573,6 +624,8 @@ export class AgentService {
     const target = promptControl ?? feed;
     if (target) {
       target.send(frame);
+      if (frame.t === "prompt" && frame.clientId !== undefined)
+        this.#prompts.delivered(frame.sessionId, frame.clientId, frame.text);
       this.#diagnostic({
         event: "control_outcome",
         action: frame.t,
@@ -589,6 +642,9 @@ export class AgentService {
         action: frame.t,
         code: "prompt-control-unavailable",
         message: PROMPT_CONTROL_UNAVAILABLE,
+        ...(frame.t === "prompt" && frame.clientId !== undefined
+          ? { clientId: frame.clientId }
+          : {}),
       });
       this.#diagnostic({
         event: "control_outcome",
@@ -721,9 +777,14 @@ export class AgentService {
   ): CollabRegistration {
     this.#registry.upsert(meta);
     // A restarted omp re-registers the same id before the old adapter closes,
-    // and that close then returns early: the dead process's questions would
-    // otherwise be replayed forever. History and media stay valid.
-    if (this.#collab.has(meta.id)) this.#pending.delete(meta.id);
+    // and that close then returns early: the dead process's questions and
+    // waits would otherwise be replayed forever, and the prompts it held never
+    // come back. History and media stay valid.
+    if (this.#collab.has(meta.id)) {
+      this.#pending.delete(meta.id);
+      this.#waits.delete(meta.id);
+      this.#prompts.drop(meta.id);
+    }
     this.#collab.set(meta.id, onDownlink);
     this.#diagnostic({
       event: "collab_session_registered",
@@ -763,21 +824,74 @@ export class AgentService {
   }
   #relayToClients(frame: UplinkFrame): void {
     if (frame.t === "state") this.#syncTitle(frame.sessionId, frame.title);
-    const out = frame.t === "msg" ? this.#stampMsgAt(frame) : frame;
+    if (frame.t === "controlError" && frame.clientId !== undefined)
+      this.#prompts.refused(frame.sessionId, frame.clientId);
+    const out =
+      frame.t === "msg"
+        ? this.#stampMsg(frame)
+        : frame.t === "interaction"
+          ? this.#stampInteractionAt(frame)
+          : frame.t === "attention"
+            ? this.#stampAttentionAt(frame)
+            : frame;
+    this.#settleWait(out);
     this.#retain(out);
     this.#emit(out);
   }
 
-  /** Give a msg frame its `at` (the time its message was written). A frame that
-   *  carries one (Collab source time) keeps it; otherwise (the IPC feed) it takes
-   *  the host time its message was first seen — the retained frame for the same
-   *  msgId, so updates and a reconnecting client's replay agree. */
-  #stampMsgAt(frame: MsgFrame): MsgFrame {
-    if (frame.at !== undefined) return frame;
+  /** Give a msg frame its `at` (the time its message was written) and, on a
+   *  user message, the phone prompt it is. A frame that carries an `at`
+   *  (Collab source time) keeps it; otherwise (the IPC feed) it takes the host
+   *  time its message was first seen — the retained frame for the same msgId,
+   *  so updates and a reconnecting client's replay agree. A user message seen
+   *  for the first time is omp taking a prompt in: it claims the oldest
+   *  delivered prompt with its text. One seen before keeps what it was named
+   *  then, so a re-sent message never claims a second prompt. */
+  #stampMsg(frame: MsgFrame): MsgFrame {
     const seen = this.#history.get(frame.sessionId)?.get(`m:${frame.msgId}`);
+    const known = seen?.t === "msg" ? seen : undefined;
+    const at = frame.at ?? known?.at ?? Date.now();
+    const clientId =
+      frame.role !== "user" || frame.clientId !== undefined
+        ? frame.clientId
+        : known
+          ? known.clientId
+          : this.#prompts.claim(frame.sessionId, frame.text);
+    return { ...frame, at, ...(clientId === undefined ? {} : { clientId }) };
+  }
+
+  /** Give an interaction its `at`, the host time it was first seen. One that
+   *  carries it keeps it; a re-sent id still pending keeps its first stamp, so
+   *  the live frame and a reconnecting client's replay agree. */
+  #stampInteractionAt(frame: InteractionFrame): InteractionFrame {
+    if (frame.at !== undefined) return frame;
+    const seen = this.#pending.get(frame.sessionId)?.get(frame.id)?.at;
+    return { ...frame, at: seen ?? Date.now() };
+  }
+
+  /** Give an attention its `at`, the host time its wait began, which names the
+   *  wait. One that carries it keeps it; otherwise each gets a later one than
+   *  the session's last, even within one millisecond, so a new wait never
+   *  takes an earlier one's name. */
+  #stampAttentionAt(frame: AttentionFrame): AttentionFrame {
     const at =
-      seen?.t === "msg" && seen.at !== undefined ? seen.at : Date.now();
-    return { ...frame, at };
+      frame.at ??
+      Math.max(Date.now(), (this.#waitStamps.get(frame.sessionId) ?? -1) + 1);
+    this.#waitStamps.set(frame.sessionId, at);
+    return frame.at === undefined ? { ...frame, at } : frame;
+  }
+
+  /** Drop a session's retained attention once a frame settles it (see
+   *  `attentionSettledBy`); a newer attention replaces it in `#retain`. Runs
+   *  before the frame is retained, so a `state` is judged against the last. */
+  #settleWait(frame: UplinkFrame): void {
+    if (frame.t === "attention" || !("sessionId" in frame)) return;
+    const wait = this.#waits.get(frame.sessionId);
+    if (wait === undefined) return;
+    const last = this.#history.get(frame.sessionId)?.get("state");
+    const wasStreaming = last?.t === "state" ? last.streaming : undefined;
+    if (attentionSettledBy(wait.reason, frame, wasStreaming))
+      this.#waits.delete(frame.sessionId);
   }
 
   /** Carry a session's live title into its list meta, so the session list a
@@ -795,7 +909,8 @@ export class AgentService {
 
   /** Retain what a (re)connecting client's {@link replay} rebuilds: one
    *  coalesced frame per message/tool plus the latest state/jobs/catalog, the
-   *  unanswered interactions, and the images. A `bye` retires all of it. */
+   *  unanswered interactions, the images and the unsettled attention. A `bye`
+   *  retires all of it. */
   #retain(frame: UplinkFrame): void {
     if (frame.t === "bye") {
       this.#dropRetained(frame.sessionId);
@@ -813,17 +928,25 @@ export class AgentService {
       this.#retainPending(frame);
       return;
     }
+    if (frame.t === "attention") {
+      this.#waits.set(frame.sessionId, frame);
+      return;
+    }
     let key: string;
     if (frame.t === "msg") key = `m:${frame.msgId}`;
     else if (frame.t === "tool") key = `t:${frame.callId}`;
     else if (frame.t === "state" || frame.t === "jobs") key = frame.t;
     else if (frame.t === "modelCatalog") key = "modelCatalog";
-    else return; // attention/controlError/resource* are events, not state
+    else return; // controlError/resource* are events, not state
     let history = this.#history.get(frame.sessionId);
     if (!history) {
       history = new Map();
       this.#history.set(frame.sessionId, history);
     }
+    // A reply that streams on after a later user message moves below it, as
+    // the phone moves it, so a replay shows the same order.
+    if (frame.t === "msg" && overtaken(history, key, frame))
+      history.delete(key);
     history.set(key, frame);
     if (history.size > HISTORY_MAX) {
       const oldest = history.keys().next().value;
@@ -872,11 +995,15 @@ export class AgentService {
       perSession.delete(oldest);
     }
   }
-  /** Forget a retired session's backfill: transcript, pending interactions, media. */
+  /** Forget a retired session's backfill: transcript, pending interactions,
+   *  media, its wait and the prompts its omp held. */
   #dropRetained(sessionId: string): void {
     this.#history.delete(sessionId);
     this.#pending.delete(sessionId);
     this.#media.delete(sessionId);
+    this.#waits.delete(sessionId);
+    this.#waitStamps.delete(sessionId);
+    this.#prompts.drop(sessionId);
   }
   #emit(msg: ClientMessage): void {
     const wire = JSON.stringify(msg);

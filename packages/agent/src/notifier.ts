@@ -32,6 +32,10 @@ interface Need {
   released: boolean;
   /** Its wait while the user was present has been reported. */
   deferReported: boolean;
+  /** Released, it then had the user's eyes: the phone had its session on
+   *  screen (`noticeSeen`), which closed its notice there. The phone is sent
+   *  nothing more for it, not even a clear. */
+  seen: boolean;
 }
 
 /** What the notifier knows of one session. */
@@ -47,7 +51,7 @@ interface Tracked {
   runningTool: { callId: string; name: string } | undefined;
   need: Need | undefined;
   /** The need whose notice the phone was last sent; `undefined` when it was
-   *  sent none, or a clear since. */
+   *  sent none, or a clear since, or the phone closed it (`noticeSeen`). */
   shown: Need | undefined;
   /** It left the session list (or said `bye`); kept only until the phone has
    *  been told to close its notice. */
@@ -88,7 +92,11 @@ export interface NotifierConfig {
  * ending or the phone replying to it, the agent moving on past a question or
  * approval, or the session going away. A need that ends before it was pushed
  * is dropped; one that was pushed is followed by a `clear` notice for its
- * session, which closes the phone's notification.
+ * session, which closes the phone's notification, unless the phone closed it
+ * first: it says so (`noticeSeen`) when the user has the session on screen
+ * there. A clear for a notification already gone would be a push that shows
+ * nothing, which Chromium answers, once the site's small budget for those is
+ * spent, with a notification of its own that names no session.
  *
  * Notices are sealed under the notify key and sent in the order decided; the
  * aggregator only carries the opaque envelope. What the link could not carry
@@ -229,8 +237,13 @@ export class Notifier {
     }
   }
 
-  /** A command from the phone: a reply answers the interaction it names. */
+  /** A command from the phone: a reply answers the interaction it names, and
+   *  `noticeSeen` says the phone closed the session's notice. */
   command(frame: DownlinkCommand): void {
+    if (frame.t === "noticeSeen") {
+      this.#seen(frame.sessionId);
+      return;
+    }
     if (frame.t !== "interactionReply") return;
     const track = this.#sessions.get(frame.sessionId);
     if (track !== undefined && track.need?.interactionId === frame.id)
@@ -303,6 +316,7 @@ export class Notifier {
       interactionId,
       released: false,
       deferReported: false,
+      seen: false,
     };
     this.#evaluate();
     // Still held, it replaces a shown need: that stale notice is cleared.
@@ -318,6 +332,23 @@ export class Notifier {
   #leave(sessionId: string, track: Tracked): void {
     track.gone = true;
     track.need = undefined;
+    this.#sync(sessionId, track);
+  }
+
+  /**
+   * The phone had the session on screen, which closed its notice there: no
+   * clear is left to push for it, and its need, once released, would only
+   * show the user what they saw. A need still held is pushed once released:
+   * the phone was sent nothing for it yet.
+   */
+  #seen(sessionId: string): void {
+    const track = this.#sessions.get(sessionId);
+    if (track === undefined) return;
+    const wanted = this.#wanted(track);
+    if (track.shown === undefined && wanted === undefined) return;
+    if (wanted !== undefined) wanted.seen = true;
+    track.shown = undefined;
+    this.#diagnostic({ event: "notify_push_seen", sessionId });
     this.#sync(sessionId, track);
   }
 
@@ -367,11 +398,16 @@ export class Notifier {
     );
   }
 
+  /** What the phone should show for the session: its need once released,
+   *  unless the phone has had the session on screen since. */
+  #wanted(track: Tracked): Need | undefined {
+    return track.need?.released && !track.need.seen ? track.need : undefined;
+  }
+
   /** Queue a delivery when the phone shows something other than what it
    *  should; forget a gone session once it shows nothing. */
   #sync(sessionId: string, track: Tracked): void {
-    const wanted = track.need?.released ? track.need : undefined;
-    if (wanted !== track.shown) this.#schedule(sessionId);
+    if (this.#wanted(track) !== track.shown) this.#schedule(sessionId);
     else if (track.gone) this.#sessions.delete(sessionId);
   }
 
@@ -388,8 +424,9 @@ export class Notifier {
   async #deliver(sessionId: string): Promise<void> {
     const track = this.#sessions.get(sessionId);
     if (track === undefined) return;
-    const wanted = track.need?.released ? track.need : undefined;
-    if (wanted === track.shown) return;
+    const wanted = this.#wanted(track);
+    const shown = track.shown;
+    if (wanted === shown) return;
     const notice: NotifyNotice = wanted
       ? {
           kind: "attention",
@@ -411,10 +448,12 @@ export class Notifier {
       });
       return;
     }
-    // It changed while sealing; the change queued a delivery of its own.
+    // It changed while sealing: the change queued a delivery of its own, or
+    // left the phone nothing to be sent (it closed the notice itself).
     if (
       this.#sessions.get(sessionId) !== track ||
-      (track.need?.released ? track.need : undefined) !== wanted
+      this.#wanted(track) !== wanted ||
+      track.shown !== shown
     )
       return;
     if (sealed === undefined) {

@@ -23,6 +23,12 @@ export const QUIET_WHILE_OPEN_DEFAULT = true;
  * JSON `{[machineId]: {key, label}}`.
  */
 const NOTIFY_KEYS_URL = "/__prefs/notify-keys";
+/** How much a notification shows: the level of detail. */
+export type NotifyDetail = "private" | "session" | "preview";
+/** "Notification detail" as the device has not yet chosen. */
+export const NOTIFY_DETAIL_DEFAULT: NotifyDetail = "preview";
+/** "Notification detail": body is the level name, one of `private`, `session`, `preview`. */
+const NOTIFY_DETAIL_URL = "/__prefs/notify-detail";
 
 const StoredNotifyKeys = z.record(
   z.string(),
@@ -128,4 +134,31 @@ export async function readNotifyKeys(
     // Storage the worker can't read, or a damaged save, counts as none.
     return new Map();
   }
+}
+/** Save the notification detail level where the service worker reads it. */
+export async function saveNotifyDetail(
+  caches: CacheStorageLike,
+  level: NotifyDetail,
+): Promise<void> {
+  const prefs = await caches.open(PREFS_CACHE);
+  await prefs.put(NOTIFY_DETAIL_URL, new Response(level));
+}
+
+/**
+ * The notification detail level as the page last saved it. Never saved, or
+ * unreadable, it is the default (preview).
+ */
+export async function readNotifyDetail(
+  caches: CacheStorageLike,
+): Promise<NotifyDetail> {
+  try {
+    const prefs = await caches.open(PREFS_CACHE);
+    const saved = await (await prefs.match(NOTIFY_DETAIL_URL))?.text();
+    if (saved === "private" || saved === "session" || saved === "preview") {
+      return saved;
+    }
+  } catch {
+    // Storage the worker can't read counts as never saved.
+  }
+  return NOTIFY_DETAIL_DEFAULT;
 }

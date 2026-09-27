@@ -186,3 +186,30 @@ test("a missing config is one FAIL line", async () => {
   expect(code).toBe(1);
   expect(lines).toEqual(["FAIL config: no config at x; run `omp-remote init`"]);
 });
+
+test("a config naming another phone than the newest paired one warns which phone the agent serves, and doctor still passes", async () => {
+  const { cfg } = await healthyStack();
+  const pairing = new PairingStore(secretPaths.pairing);
+  await pairing.load();
+  await pairing.trust({
+    id: "phone-2",
+    publicKey: (await newIdentity()).publicKey,
+  });
+  // One paired before the newest, and one the store does not trust at all.
+  for (const phoneId of ["phone-1", "phone-gone"]) {
+    const { code, lines } = await runDoctor(
+      Config.parse({ ...cfg, agent: { ...cfg.agent, phoneId } }),
+    );
+    expect(code).toBe(0);
+    const warning = lines.find((l) => l.startsWith("WARN paired phone"));
+    expect(warning).toContain(
+      "the agent serves the newest paired phone (phone-2)",
+    );
+    expect(warning).toEndWith("omp-remote pair");
+  }
+  // Naming the newest one is no warning.
+  const { lines } = await runDoctor(
+    Config.parse({ ...cfg, agent: { ...cfg.agent, phoneId: "phone-2" } }),
+  );
+  expect(lines).toContain("ok   paired phone");
+});

@@ -7,9 +7,10 @@ import { resolve } from "node:path";
  *
  * Reducer notes (verified against a real trace, see collab-trace.json):
  * - Only ASSISTANT messages stream. `message_start/update/end` events carry the
- *   full accumulating message with no stable id and can arrive out of order
- *   (an `update` before its `start`), so a message is keyed by one synthetic id
- *   that is assigned on the first non-empty emission and retired on `message_end`.
+ *   full accumulating message with no id and can arrive out of order (an
+ *   `update` before its `start`), but every event of one message carries its
+ *   `timestamp`, so role + timestamp key the row (`FeedMsgIds`), exactly as
+ *   they key that message's entry in a snapshot.
  * - Empty (tool-call-only) assistant messages emit nothing; the tool shows via
  *   `tool_execution_*` events.
  * - `toolResult` never becomes a message; live tool output rides the
@@ -25,6 +26,7 @@ import type {
   UplinkFrame,
 } from "@omp-remote/protocol";
 import {
+  FeedMsgIds,
   MAX_RESOURCE_BYTES,
   base64ByteLength,
   chunkBase64,
@@ -197,11 +199,11 @@ export class CollabTranslator {
   #model = "";
   #title = "";
   #seq = 0;
-  /** Synthetic id of the assistant message currently streaming, or null between messages. */
+  /** Row ids of the messages that carry a timestamp (see `#streamAssistant`).
+   *  A welcome's snapshot replays the history in order, so it starts afresh. */
+  #ids = new FeedMsgIds();
+  /** Row id of the assistant message last streamed, or null between messages. */
   #streamId: string | null = null;
-  /** Source time of the streaming message, fixed at its first emission so every phase shares it. */
-  #streamAt: number | undefined;
-  #streamStarted = false;
   #wasStreaming = false;
   #thinkingLevel?: string;
   #contextPct?: number;
@@ -222,6 +224,7 @@ export class CollabTranslator {
   host(frame: CollabHostFrame): UplinkFrame[] {
     switch (frame.t) {
       case "welcome":
+        this.#ids = new FeedMsgIds();
         this.#title = frame.header.title ?? frame.state.sessionName ?? "";
         this.#absorbState(frame.state);
         return this.#stateFrames(frame.state.isStreaming);
@@ -378,14 +381,23 @@ export class CollabTranslator {
       }
       if (live && role === "assistant") return out; // empty; text streamed via events
       const text = extractText(message.content);
-      if (text)
+      const timestamp = epochMs(message.timestamp);
+      // A reply keys its row as it streamed; every one takes its occurrence,
+      // text or not. A user message keeps its entry id, the same live and in
+      // a snapshot, and always gets a row: an image sent without words
+      // settles the phone's copy of it too.
+      const msgId =
+        role === "assistant" && timestamp !== undefined
+          ? this.#ids.end("assistant", timestamp)
+          : (entry.id ?? `e${++this.#seq}`);
+      if (text || role === "user")
         out.push(
           this.#msg(
-            entry.id ?? `e${++this.#seq}`,
+            msgId,
             "end",
             role,
             text,
-            epochMs(message.timestamp) ?? epochMs(entry.timestamp),
+            timestamp ?? epochMs(entry.timestamp),
           ),
         );
       return out;
@@ -438,33 +450,39 @@ export class CollabTranslator {
       typeof message !== "object" ||
       message.role !== "assistant"
     ) {
-      if (isEnd) this.#retireStream();
+      if (isEnd) this.#streamId = null;
       return [];
     }
     const text = extractText(message.content);
+    // omp gives a message no id, but all its events share one timestamp: it
+    // keys the row, as it keys the message's snapshot entry, so a reconnect's
+    // snapshot and a restarted translator land on the same rows instead of
+    // doubling them or reusing a synthetic id. A message without one streams
+    // under a synthetic id until it ends.
+    const timestamp = epochMs(message.timestamp);
+    const id =
+      timestamp === undefined
+        ? (this.#streamId ?? `a${++this.#seq}`)
+        : isEnd
+          ? this.#ids.end("assistant", timestamp)
+          : this.#ids.id("assistant", timestamp);
+    const streamed = this.#streamId === id;
     if (isEnd) {
-      const id = this.#streamId;
-      const at = id === null ? epochMs(message.timestamp) : this.#streamAt;
-      this.#retireStream();
-      if (!text) return [];
-      return [this.#msg(id ?? `a${++this.#seq}`, "end", "assistant", text, at)];
+      this.#streamId = null;
+      if (!text && !streamed) return [];
+      return [this.#msg(id, "end", "assistant", text, timestamp)];
     }
     if (!text) return [];
-    if (this.#streamId === null) {
-      this.#streamId = `a${++this.#seq}`;
-      this.#streamAt = epochMs(message.timestamp);
-    }
-    const phase = this.#streamStarted ? "update" : "start";
-    this.#streamStarted = true;
+    this.#streamId = id;
     return [
-      this.#msg(this.#streamId, phase, "assistant", text, this.#streamAt),
+      this.#msg(
+        id,
+        streamed ? "update" : "start",
+        "assistant",
+        text,
+        timestamp,
+      ),
     ];
-  }
-
-  #retireStream(): void {
-    this.#streamId = null;
-    this.#streamAt = undefined;
-    this.#streamStarted = false;
   }
 
   #toolEvent(

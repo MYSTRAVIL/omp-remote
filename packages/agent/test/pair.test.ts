@@ -26,6 +26,11 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/** The `serve` step of a pairing that must fail before any phone is served. */
+function serveNobody(phonePub: string): Promise<void> {
+  return Promise.reject(new Error(`served ${phonePub}`));
+}
+
 /**
  * A `fetch` stand-in that serves `/pair/host` and returns the given sequence of
  * `/pair/result` bodies, one per poll, repeating the last once exhausted. Each
@@ -57,7 +62,7 @@ function fakeFetch(
   }) as typeof fetch;
 }
 
-test("performPairing claims the phone, verifies its MAC and trusts it", async () => {
+test("performPairing claims the phone, verifies its MAC, trusts it and serves it before it reports success", async () => {
   const storePath = tempStorePath();
   const tokenPath = tempStorePath();
   try {
@@ -71,6 +76,8 @@ test("performPairing claims the phone, verifies its MAC and trusts it", async ()
 
     const printed: string[] = [];
     const hostAuth: (string | null)[] = [];
+    const served: { phonePub: string; trusted: boolean; reported: boolean }[] =
+      [];
     const result = await performPairing({
       baseUrl: BASE_URL,
       fetch: fakeFetch(
@@ -83,6 +90,13 @@ test("performPairing claims the phone, verifies its MAC and trusts it", async ()
       machineId: "machine-a",
       agentTokenPath: tokenPath,
       store,
+      serve: async (pub) => {
+        served.push({
+          phonePub: pub,
+          trusted: store.peer(pub) !== undefined,
+          reported: printed.some((line) => line.startsWith("Paired")),
+        });
+      },
       print: (line) => printed.push(line),
       newCode: () => Promise.resolve(FIXED_CODE),
       sleep: () => Promise.resolve(),
@@ -109,6 +123,9 @@ test("performPairing claims the phone, verifies its MAC and trusts it", async ()
     expect(printed.some((l) => l.includes(expectedSas))).toBe(true);
 
     expect(store.peers().map((p) => p.id)).toContain(phonePub);
+    // Served once trusted and before success is reported, so a caller that
+    // stops as soon as the pairing resolves cannot leave it unnamed.
+    expect(served).toEqual([{ phonePub, trusted: true, reported: false }]);
   } finally {
     await rm(storePath, { force: true });
     await rm(tokenPath, { force: true });
@@ -146,6 +163,7 @@ test("performPairing presents the current token only when renewing; a join never
         agentTokenPath: tokenPath,
         store,
         renew,
+        serve: async () => {},
         print: () => {},
         newCode: () => Promise.resolve(FIXED_CODE),
         sleep: () => Promise.resolve(),
@@ -190,6 +208,7 @@ test("performPairing rejects and trusts nobody when the phone MAC is forged", as
         machineId: "machine-a",
         agentTokenPath: tokenPath,
         store,
+        serve: serveNobody,
         print: () => {},
         newCode: () => Promise.resolve(FIXED_CODE),
         sleep: () => Promise.resolve(),
@@ -222,6 +241,7 @@ test("performPairing stops at once with a rename hint when the server refuses th
         machineId: "machine-a",
         agentTokenPath: tokenPath,
         store,
+        serve: serveNobody,
         print: () => {},
         newCode: () => Promise.resolve(FIXED_CODE),
         sleep: () => Promise.resolve(),
@@ -266,6 +286,7 @@ test("against a real server, pairing under another machine's name fails with the
         machineId: "machine-a",
         agentTokenPath: tokenPath,
         store,
+        serve: serveNobody,
         print: () => {},
         newCode: () => Promise.resolve(FIXED_CODE),
         timeoutMs: 5,
@@ -315,6 +336,7 @@ test("performPairing rejects with a timeout when the claim never lands", async (
         machineId: "machine-a",
         agentTokenPath: tokenPath,
         store,
+        serve: serveNobody,
         print: () => {},
         newCode: () => Promise.resolve(FIXED_CODE),
         pollIntervalMs: 1,

@@ -4,6 +4,7 @@ export * from "./frames";
 export * from "./codec";
 export * from "./aggregator";
 export * from "./local-auth";
+export * from "./messages";
 export * from "./pairing";
 export * from "./notify";
 export * from "./queue";

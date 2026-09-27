@@ -86,7 +86,7 @@ test("on open the client attaches and says a sealed hello per machine; the agent
   const m1 = new FakeAgent(agent, "m1");
   m1.connect(sock);
   m1.relay();
-  expect(m1.frames).toEqual([{ t: "sync" }]);
+  expect(m1.frames).toEqual([{ t: "sync", id: expect.any(String) }]);
 
   // Both lines are opaque: the clear route, never a plaintext frame type.
   const sealed = sealedLines(sock);
@@ -119,7 +119,7 @@ test("two acks from the same agent epoch on one socket pull one sync, not two fu
   // The agent acks both hellos; the channel accepts both, yet one sync goes out.
   m1.connect(sock);
   m1.relay();
-  expect(m1.frames).toEqual([{ t: "sync" }]);
+  expect(m1.frames).toEqual([{ t: "sync", id: expect.any(String) }]);
 });
 
 test("a sealed snapshot for a machine populates its tree; foreign lines drop", async () => {
@@ -209,11 +209,11 @@ test("each machine's channel, once ready, is told that machine's away time along
   m1.relay();
   m2.relay();
   expect(m1.frames).toEqual([
-    { t: "sync" },
+    { t: "sync", id: expect.any(String) },
     { t: "notifyPolicy", awaySec: 300 },
   ]);
   expect(m2.frames).toEqual([
-    { t: "sync" },
+    { t: "sync", id: expect.any(String) },
     { t: "notifyPolicy", awaySec: 120 },
   ]);
 });
@@ -238,7 +238,7 @@ test("a new away time goes to its machine at once when its channel is ready, els
   m1.connect(sock);
   m1.relay();
   expect(m1.frames).toEqual([
-    { t: "sync" },
+    { t: "sync", id: expect.any(String) },
     { t: "notifyPolicy", awaySec: 60 },
   ]);
 
@@ -247,7 +247,7 @@ test("a new away time goes to its machine at once when its channel is ready, els
   client.sendNotifyPolicy("m1");
   m1.relay();
   expect(m1.frames).toEqual([
-    { t: "sync" },
+    { t: "sync", id: expect.any(String) },
     { t: "notifyPolicy", awaySec: 60 },
     { t: "notifyPolicy", awaySec: 0 },
   ]);
@@ -282,4 +282,35 @@ test("a historyRequest goes sealed to its machine, and the sealed history answer
   };
   sock.deliver(m1.seal({ t: "history", cwd: "C:\\p", entries: [entry] }));
   expect(seen).toEqual([[entry]]);
+});
+
+test("a machine whose agent cannot open this phone's lines asks to pair again, until an ack opens here", async () => {
+  const { phone, agent } = await pair();
+  const other = await pair();
+  const store = new AppStore();
+  const sock = new FakeSocket();
+  new PhoneClient(
+    () => sock,
+    [{ machineId: "m1", keys: phone }],
+    store,
+  ).start();
+  sock.fireOpen();
+  sock.deliver(JSON.stringify({ type: "machines", machineIds: ["m1"] }));
+
+  // The agent holds another pairing's keys: it says, in the clear, that the
+  // hello did not open there.
+  const stranger = new FakeAgent(other.agent, "m1");
+  stranger.connect(sock);
+  stranger.relay();
+  expect(store.tree()).toEqual([
+    expect.objectContaining({ machineId: "m1", unpaired: true }),
+  ]);
+  // No list is coming from it, so it is not shown as syncing.
+  expect(store.tree()[0]?.syncing).toBeUndefined();
+
+  // An agent holding this phone's keys acks that hello: paired after all.
+  const m1 = new FakeAgent(agent, "m1");
+  m1.connect(sock);
+  m1.relay();
+  expect(store.tree()[0]?.unpaired).toBeUndefined();
 });

@@ -18,6 +18,7 @@ import {
   type NotifyNotice,
   type Scheduler,
   type SealedFrame,
+  type SealedRefusal,
   SealedWireEnvelope,
   openNotice,
 } from "@omp-remote/protocol";
@@ -175,6 +176,8 @@ class FakePhone {
   readonly frames: SealedFrame[] = [];
   /** Every line the phone put on the wire, in order. */
   readonly wire: Uint8Array[] = [];
+  /** Every refusal the agent told this phone of, in order. */
+  readonly refusals: SealedRefusal[] = [];
   readonly channel: SealedChannel;
   #sock: FakeSocket;
   #feed: ((b: Uint8Array) => void) | undefined;
@@ -193,7 +196,7 @@ class FakePhone {
         },
       },
       machineId,
-      { role: "initiator" },
+      { role: "initiator", onRefused: (code) => this.refusals.push(code) },
     );
     this.channel.onFrame((f) => this.frames.push(f));
   }
@@ -314,12 +317,13 @@ test("stop() halts the keepalive interval", async () => {
   expect(sock.pingCount()).toBe(0);
 });
 
-/** Events no replay can rebuild: the uplink holds them while the link is down. */
+/** A session's wait: its latest attention, which the replay rebuilds. */
 const attention: ClientMessage = {
   t: "attention",
   sessionId: "s1",
   reason: "approval",
 };
+/** Events no replay can rebuild: the uplink holds them while the link is down. */
 const ended: ClientMessage = {
   t: "interactionEnd",
   sessionId: "s1",
@@ -348,9 +352,9 @@ test("a reconnect sends register, then the channel's hello, then the full replay
   phoneEnd.bind();
   sock1.fireClose(); // link drops → reconnect scheduled
 
-  // While down the session keeps going. Its message is state the replay
-  // rebuilds; the attention, the settled interaction and the failed control
-  // are events only the held queue carries.
+  // While down the session keeps going. Its message and its wait are state
+  // the replay rebuilds; the settled interaction and the failed control are
+  // events only the held queue carries.
   emit(msg("s1", "written while down"));
   emit(attention);
   emit(ended);
@@ -358,6 +362,7 @@ test("a reconnect sends register, then the channel's hello, then the full replay
   const replay: ClientMessage[] = [
     { t: "sessions", sessions: [] },
     msg("s1", "written while down"),
+    attention,
   ];
   setReplay(replay);
 
@@ -375,7 +380,7 @@ test("a reconnect sends register, then the channel's hello, then the full replay
   expect(SealedWireEnvelope.parse(JSON.parse(dec.decode(hello))).k).toBe("h");
   // The phone, still bound to this agent, takes the rest in order.
   phoneEnd.read(sealed);
-  expect(phoneEnd.frames).toEqual([...replay, attention, ended, failed]);
+  expect(phoneEnd.frames).toEqual([...replay, ended, failed]);
   uplink.stop();
 });
 
@@ -397,22 +402,27 @@ test("while down only transient frames are held; past maxQueue the oldest drops 
   sock1.fireClose();
 
   // Replayable frames take no slot, however many there are.
-  const alerts = ["s1", "s2", "s3", "s4"].map(
-    (sessionId) => ({ t: "attention", sessionId, reason: "idle" }) as const,
-  );
-  for (const alert of alerts) {
-    emit(alert);
-    for (let i = 0; i < 10; i++) emit(msg(alert.sessionId, `${i}`));
+  const failures = ["s1", "s2", "s3", "s4"].map((sessionId) => ({
+    t: "controlError" as const,
+    sessionId,
+    action: "compact" as const,
+    code: "control-failed" as const,
+    message: "compaction rejected",
+  }));
+  for (const failure of failures) {
+    emit(failure);
+    emit(attention);
+    for (let i = 0; i < 10; i++) emit(msg(failure.sessionId, `${i}`));
   }
 
   sched.fireTimers();
   sock2.fireOpen();
 
   phoneEnd.read(sock2.sealed());
-  // The replay, then the three newest alerts: the oldest was evicted...
+  // The replay, then the three newest failures: the oldest was evicted...
   expect(phoneEnd.frames).toEqual([
     { t: "sessions", sessions: [] },
-    ...alerts.slice(1),
+    ...failures.slice(1),
   ]);
   // ...and the loss is reported, not silent.
   expect(diagnostics).toContainEqual({
@@ -528,13 +538,17 @@ test("frames still held back when the socket closes are not lost: transient ones
 
   // Only the reconnect is pending: the dead socket's flush retry is gone.
   expect(sched.timers).toHaveLength(1);
-  const replay: ClientMessage[] = [{ t: "sessions", sessions: [] }, unsent];
+  const replay: ClientMessage[] = [
+    { t: "sessions", sessions: [] },
+    unsent,
+    attention,
+  ];
   setReplay(replay);
   sched.fireTimers();
   sock2.fireOpen();
 
   phoneEnd.read(sock2.sealed());
-  expect(phoneEnd.frames).toEqual([...replay, attention, ended]);
+  expect(phoneEnd.frames).toEqual([...replay, ended]);
   uplink.stop();
 });
 
@@ -764,6 +778,7 @@ const commands: {
   resourceAbort: { t: "resourceAbort", sessionId: "s1", transferId: "x1" },
   mediaFetch: { t: "mediaFetch", sessionId: "s1", mediaId: "s1:0" },
   notifyPolicy: { t: "notifyPolicy", awaySec: 300 },
+  noticeSeen: { t: "noticeSeen", sessionId: "s1" },
   historyRequest: { t: "historyRequest", cwd: "/tmp/project" },
 };
 
@@ -959,6 +974,66 @@ test("a relay feeding in garbage gets one report per kind of rejection on a conn
   expect(rejections().slice(3)).toEqual([
     { event: "client_frame_rejected", code: "malformed" },
   ]);
+});
+
+test("a phone the agent no longer serves hears so in the clear on every hello; the first refusal is logged at once", async () => {
+  // The pairing store gained a newer phone: the agent keys to it, and the
+  // phone paired before it still says hello with its own keys.
+  const machineIdentity = await newIdentity();
+  const served = await newIdentity();
+  const dropped = await newIdentity();
+  const agentKeys = await serverSessionKeys(machineIdentity, served.publicKey);
+  const { feed, downlinks } = makeFeed();
+  const sched = new FakeScheduler();
+  const sock = new FakeSocket();
+  const diagnostics: AgentDiagnostic[] = [];
+  const uplink = uplinkWith(agentKeys, feed, sched, [sock], {
+    diagnostic: (event) => diagnostics.push(event),
+  });
+  const rejections = () =>
+    diagnostics.filter(
+      (event) =>
+        event.event === "client_frame_rejected" ||
+        event.event === "client_frame_rejections_suppressed",
+    );
+  uplink.start();
+  sock.fireOpen();
+  const phoneEnd = new FakePhone(
+    await clientSessionKeys(dropped, machineIdentity.publicKey),
+    sock,
+  );
+
+  const before = sock.sealed().length;
+  phoneEnd.bind();
+  // One clear line answers the hello: the phone instance and why, no more.
+  const hello = SealedWireEnvelope.parse(
+    JSON.parse(dec.decode(phoneEnd.wire[0])),
+  );
+  expect(
+    sock
+      .sealed()
+      .slice(before)
+      .map((line) => JSON.parse(dec.decode(line))),
+  ).toEqual([{ route: machineId, k: "r", a: hello.e, code: "auth-failed" }]);
+  expect(phoneEnd.refusals).toEqual(["auth-failed"]);
+  expect(rejections()).toEqual([
+    { event: "client_frame_rejected", code: "auth-failed" },
+  ]);
+
+  // The phone's next socket says hello again and is told again; the log
+  // counts it, to report when this connection closes.
+  phoneEnd.bind();
+  expect(phoneEnd.refusals).toEqual(["auth-failed", "auth-failed"]);
+  expect(downlinks).toEqual([]);
+  sock.fireClose();
+  expect(rejections()).toEqual([
+    { event: "client_frame_rejected", code: "auth-failed" },
+    {
+      event: "client_frame_rejections_suppressed",
+      suppressedCount: { "auth-failed": 1 },
+    },
+  ]);
+  uplink.stop();
 });
 
 /** The pushes the aggregator was asked for on `sock`, opened as the phone

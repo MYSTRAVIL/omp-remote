@@ -235,16 +235,21 @@ test("the dev client admits the secret with an allowed or absent Origin", async 
   expect(head).toMatch(/^sec-websocket-protocol: omp-remote-dev$/im);
   expect(head).not.toContain(TEST_DEV_SECRET);
 
-  // A local tool sends no Origin; it gets the replayed session list.
+  // A local tool sends no Origin; it gets the replay: bracketed, and here
+  // only the session list.
   const ws = devClientSocket(service.boundPort);
-  const replayed = Promise.withResolvers<string>();
-  ws.addEventListener("message", (e) => replayed.resolve(String(e.data)), {
-    once: true,
+  const frames: unknown[] = [];
+  const replayed = Promise.withResolvers<void>();
+  ws.addEventListener("message", (e) => {
+    frames.push(JSON.parse(String(e.data)));
+    if (frames.length === 3) replayed.resolve();
   });
-  expect(JSON.parse(await replayed.promise)).toMatchObject({
-    t: "sessions",
-    sessions: [{ id: "s1" }],
-  });
+  await replayed.promise;
+  expect(frames).toMatchObject([
+    { t: "replayStart" },
+    { t: "sessions", sessions: [{ id: "s1" }] },
+    { t: "replayEnd" },
+  ]);
   expect(ws.protocol).toBe("omp-remote-dev");
   ws.close();
 });

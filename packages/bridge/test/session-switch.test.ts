@@ -436,12 +436,53 @@ test("the feed echoes a prompt as the user's message once omp takes it in", asyn
   await omp.fire("message_update", assistantUpdate(5_000, text("mango")));
   await ipc.next((s) => s.frame.t === "msg" && s.frame.text === "mango");
 
-  // The phone confirms its optimistic send by role and exact text.
+  // The phone confirms its send against these rows.
   const sent = ipc.seen.flatMap((s) => (s.frame.t === "msg" ? [s.frame] : []));
   expect(sent.map((m) => [m.phase, m.role, m.text])).toEqual([
     ["end", "user", "say mango"],
     ["end", "user", ""],
-    ["update", "assistant", "mango"],
+    ["start", "assistant", "mango"],
   ]);
   expect(new Set(sent.map((m) => m.msgId)).size).toBe(3);
+});
+
+test("the feed finishes each reply's row, and a second reply in the same millisecond gets its own row", async () => {
+  const ipc = await listen();
+  const omp = loadBridge("feed", ipc.path);
+  await omp.fire("session_start");
+  await ipc.next(helloFor("s1"));
+
+  const reply = (textValue: string) => ({
+    role: "assistant",
+    content: [text(textValue)],
+    timestamp: 7_000,
+  });
+  // A tool-call-only reply streams no text: it has no row to finish.
+  await omp.fire("message_end", {
+    type: "message_end",
+    message: { role: "assistant", content: [], timestamp: 6_000 },
+  });
+  await omp.fire("message_update", assistantUpdate(7_000, text("First")));
+  await omp.fire("message_end", {
+    type: "message_end",
+    message: reply("First answer"),
+  });
+  // A distinct reply that happens to share the millisecond must not
+  // overwrite the first one's row.
+  await omp.fire("message_update", assistantUpdate(7_000, text("Second")));
+  await omp.fire("message_end", {
+    type: "message_end",
+    message: reply("Second answer"),
+  });
+  await ipc.next(
+    (s) => s.frame.t === "msg" && s.frame.text === "Second answer",
+  );
+
+  const sent = ipc.seen.flatMap((s) => (s.frame.t === "msg" ? [s.frame] : []));
+  expect(sent.map((m) => [m.phase, m.msgId, m.text])).toEqual([
+    ["start", "assistant-7000", "First"],
+    ["end", "assistant-7000", "First answer"],
+    ["start", "assistant-7000-2", "Second"],
+    ["end", "assistant-7000-2", "Second answer"],
+  ]);
 });

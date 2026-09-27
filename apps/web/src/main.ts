@@ -8,6 +8,7 @@ import {
   startRegistration,
 } from "@simplewebauthn/browser";
 import type { OrbState } from "thinking-orbs/engine";
+import { badgeApi, showBadge } from "./core/app-badge";
 import {
   AppearancePreferences,
   applyAppearance,
@@ -47,6 +48,7 @@ import { LocalClient } from "./core/local-client";
 import { MachineCatalogs } from "./core/machine-catalogs";
 import { MachineLabels } from "./core/machine-labels";
 import { MachinePresence } from "./core/machine-presence";
+import { NotificationTaps } from "./core/notification-tap";
 import { NotifyAway } from "./core/notify-away";
 import { claimPairing, takePairLinkCode, watchPairLinks } from "./core/pair";
 import {
@@ -65,9 +67,9 @@ import { spawnFrame } from "./core/spawn-frame";
 import { AppStore } from "./core/store";
 import { type NotifyMachine, saveNotifyKeys } from "./core/sw-caches";
 import {
-  type NotificationTarget,
   OPEN_PARAM,
   OpenSessionMessage,
+  closeSettled,
   openSessionTarget,
   sessionTag,
 } from "./core/sw-push";
@@ -85,6 +87,7 @@ import {
   renderSpawnPending,
   renderTree,
 } from "./ui/render";
+import { Toast } from "./ui/toast";
 import { UpdateNotice } from "./ui/update-notice";
 
 // Replaced at build time (build.ts) with this bundle's short commit id.
@@ -164,6 +167,18 @@ store.setMachineLabels(machineLabels.names);
 // How long the user must be away from each machine before it pushes, chosen
 // here per machine; each machine is told on every connect.
 const awayPolicy = new NotifyAway(deviceStorage);
+
+// The app icon's badge: the sessions waiting on the user, set only while
+// every list is current. With the app closed, the service worker keeps it to
+// the session notifications showing.
+const pageBadge = badgeApi(navigator);
+let badgeCount: number | undefined;
+function updateBadge(): void {
+  const count = store.waitingCount();
+  if (count === undefined || count === badgeCount) return;
+  badgeCount = count;
+  void showBadge(pageBadge, count);
+}
 
 // Back-gesture support: mirror the tree↔session view in browser history so the
 // Android/browser back gesture returns to the sessions list instead of leaving
@@ -325,26 +340,36 @@ const build = {
   updates: () => readUpdateHistory(deviceStorage),
 };
 
+// A short line over every screen: a tapped notification's session that ended.
+const toast = new Toast();
+
 const handlers: ControlHandlers = {
-  onSelect: (id) => nav.open(id),
+  // Opening a session drops a tapped notification still waiting to open.
+  onSelect: (id) => {
+    taps.drop();
+    nav.open(id);
+  },
   onBack: () => nav.back(),
   onOverlay: (close) => nav.overlay(close),
   onPrompt: async (text, mode, attachments) => {
     const session = store.selectedSession();
     const machineId = store.selectedMachineId();
     if (!session || !machineId) return false;
+    const clientId = randomId();
     const sent = sendControl(machineId, {
       t: "prompt",
       sessionId: session.id,
       text,
       mode,
       attachments,
+      clientId,
     });
     if (sent)
       store.addPendingPrompt(
         session.id,
         text,
         mode === "aside" ? "followUp" : mode,
+        clientId,
       );
     return sent;
   },
@@ -528,18 +553,21 @@ function connectLocal(): void {
     onPrompt: async (text, mode, attachments) => {
       const session = store.selectedSession();
       if (!session) return false;
+      const clientId = randomId();
       const sent = send({
         t: "prompt",
         sessionId: session.id,
         text,
         mode,
         attachments,
+        clientId,
       });
       if (sent)
         store.addPendingPrompt(
           session.id,
           text,
           mode === "aside" ? "followUp" : mode,
+          clientId,
         );
       return sent;
     },
@@ -673,24 +701,32 @@ function copyNotifyKeys(): void {
 }
 
 /**
- * Close the notification of the session the user now sees: selected while
- * this page is on screen, or on screen again with it selected. The worker
- * shows one per session, under its session tag.
+ * The user sees this page now: close the notifications that only say a
+ * session no longer waits, and the notification of the session selected,
+ * just selected or on screen again. The worker shows one per session, under
+ * its session tag. The session's machine is told, so it pushes no clear for
+ * a notification already closed here: Chromium shows its own contentless
+ * notification for a push that leaves none showing (see `clearSession` in
+ * core/sw-push).
  */
 function closeSeenNotification(): void {
   const container = isLocalDev ? undefined : navigator.serviceWorker;
+  if (!container || document.visibilityState !== "visible") return;
   const session = store.selectedSession();
   const machineId = store.selectedMachineId();
-  if (
-    !container ||
-    document.visibilityState !== "visible" ||
-    session === undefined ||
-    machineId === undefined
-  )
-    return;
-  const tag = sessionTag(machineId, session.id);
+  const seen =
+    session === undefined || machineId === undefined
+      ? undefined
+      : { machineId, sessionId: session.id };
+  if (seen !== undefined)
+    client
+      ?.channelFor(seen.machineId)
+      ?.sendFrame({ t: "noticeSeen", sessionId: seen.sessionId });
   void container.ready
     .then(async (registration) => {
+      await closeSettled(registration);
+      if (seen === undefined) return;
+      const tag = sessionTag(seen.machineId, seen.sessionId);
       for (const shown of await registration.getNotifications({ tag }))
         shown.close();
     })
@@ -699,20 +735,30 @@ function closeSeenNotification(): void {
     });
 }
 
-/** The session a tapped notification asked for while signed out, opened at sign-in. */
-let notifiedSession: string | undefined;
+/** What the list says when a tapped notification's session has ended. */
+const TAP_ENDED_NOTICE = "That session has ended";
 
-/**
- * Open the session a tapped notification stands for, as a tap in the session
- * list does; signed out, it opens once signed in. One from a machine no
- * longer paired here is ignored.
- */
-function openNotified(target: NotificationTarget): void {
-  const paired = pairedMachineIds((k) => localStorage.getItem(k));
-  if (!paired.includes(target.machineId)) return;
-  if (client === undefined) notifiedSession = target.sessionId;
-  else activeHandlers.onSelect(target.sessionId);
-}
+// A tapped notification's session opens as a tap in the session list does,
+// but never from rows in doubt (see core/notification-tap): until its
+// machine's list is current, and when the session ended or its machine is
+// offline, the list shows instead. Signed out, it waits for sign-in; opening
+// a session meanwhile drops it; a reload of this window keeps it.
+const taps = new NotificationTaps({
+  storage: {
+    getItem: (k) => sessionStorage.getItem(k),
+    setItem: (k, v) => sessionStorage.setItem(k, v),
+    removeItem: (k) => sessionStorage.removeItem(k),
+  },
+  pairedMachineIds: () => pairedMachineIds((k) => localStorage.getItem(k)),
+  ready: () => client !== undefined,
+  tree: () => store.tree(),
+  connecting: () => store.connecting(),
+  hidden: () => document.visibilityState !== "visible",
+  probe: () => client?.probe(),
+  open: (sessionId) => nav.open(sessionId),
+  back: () => nav.back(),
+  ended: () => toast.show(TAP_ENDED_NOTICE),
+});
 
 async function connect(token: string): Promise<void> {
   sessionToken = token;
@@ -747,10 +793,9 @@ async function connect(token: string): Promise<void> {
   if (client !== next) return;
   draw();
   void push.signedIn(token);
-  // A notification tapped before sign-in opens its session now.
-  const notified = notifiedSession;
-  notifiedSession = undefined;
-  if (notified !== undefined) activeHandlers.onSelect(notified);
+  // A notification tapped before sign-in, or before a reload, opens its
+  // session once its list is current.
+  taps.settle();
   // A pairing link opened before sign-in is offered now; nothing is claimed
   // until the user presses Pair.
   const linked = pairLinkCode;
@@ -768,6 +813,9 @@ function signOut(notice?: string): void {
   relayConnectedOnce = false;
   client?.stop();
   client = undefined;
+  // Signed out, no session is known to wait here.
+  badgeCount = undefined;
+  void showBadge(pageBadge, 0);
   void renderLogin(notice);
 }
 
@@ -891,9 +939,11 @@ const swRegistration = isLocalDev
   : registerServiceWorker(navigator, "/sw.js");
 // Apply a new deploy: when a freshly installed SW claims this page, the new
 // shell (main.js/styles.css) only runs after a reload. Reload at once and say
-// so on the next load; when a session holds an unsent draft, offer the reload
-// instead so the draft survives until the user is ready. Guarded to fire once,
-// and never on the first-ever install (no prior controller).
+// so on the next load; the session open (or a tapped notification's, still
+// waiting) opens again once the new build's list is current. When a session
+// holds an unsent draft, offer the reload instead so the draft survives until
+// the user is ready. Guarded to fire once, and never on the first-ever
+// install (no prior controller).
 const updateNotice = new UpdateNotice({
   storage: {
     getItem: (k) => sessionStorage.getItem(k),
@@ -901,7 +951,16 @@ const updateNotice = new UpdateNotice({
     removeItem: (k) => sessionStorage.removeItem(k),
   },
   history: deviceStorage,
-  reload: () => location.reload(),
+  reload: () => {
+    const session = store.selectedSession();
+    const machineId = store.selectedMachineId();
+    taps.carry(
+      session === undefined || machineId === undefined
+        ? undefined
+        : { machineId, sessionId: session.id },
+    );
+    location.reload();
+  },
 });
 updateNotice.announce(__OMP_BUILD_ID__);
 if (!isLocalDev && navigator.serviceWorker) {
@@ -920,7 +979,7 @@ if (!isLocalDev && navigator.serviceWorker) {
   // A tapped notification asks this window to open its session.
   navigator.serviceWorker.addEventListener("message", (event) => {
     const message = OpenSessionMessage.safeParse(event.data);
-    if (message.success) openNotified(message.data);
+    if (message.success) taps.tapped(message.data);
   });
 }
 document.body.append(pairStatus, pairPrompt.node);
@@ -937,6 +996,10 @@ store.subscribe(() => {
   nav.open(id);
 });
 store.subscribe(scheduleDraw);
+// A tapped notification waiting on its machine's list, and the app badge,
+// follow every change.
+store.subscribe(() => taps.settle());
+store.subscribe(updateBadge);
 // Settings > Notifications shows the push registration as it settles; once
 // signed out, nothing may paint the workspace over the login screen.
 push.subscribe(() => {
@@ -974,7 +1037,8 @@ if (isLocalDev) {
   connectLocal();
 } else {
   // A window opened by a tapped notification starts on its session. The
-  // parameter comes off the address first, so a reload starts on the list.
+  // parameter comes off the address first, so a reload starts on the list,
+  // unless the tap is still waiting then (see NotificationTaps).
   const address = new URL(location.href);
   const target = openSessionTarget(
     address.search,
@@ -984,7 +1048,7 @@ if (isLocalDev) {
     address.searchParams.delete(OPEN_PARAM);
     history.replaceState(history.state, "", address);
   }
-  if (target !== undefined) openNotified(target);
+  if (target !== undefined) taps.tapped(target);
   // A link opened while the app is open changes only the fragment: its code
   // comes off the address the same way and waits for the same prompt.
   watchPairLinks(window, location, history, (code) => {

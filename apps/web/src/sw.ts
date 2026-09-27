@@ -2,8 +2,10 @@
 
 // First: it configures Zod before any schema below is built.
 import "./zod-jitless";
+import { badgeApi } from "./core/app-badge";
 import {
   SHELL_CACHE_PREFIX,
+  readNotifyDetail,
   readNotifyKeys,
   readQuietWhileOpen,
   staleShellCaches,
@@ -84,7 +86,9 @@ worker.addEventListener("fetch", (event) => {
 // with the machine's name here. The relay pushes every subscribed device
 // alike; this device filters on its own: with "Quiet while the app is open"
 // on (also read from the prefs cache), a push that lands while a window of the
-// app is on screen is shown silently and closed at once. See `handlePush`.
+// app is on screen is shown silently and closed at once. Each session
+// notification shown or closed sets the app badge where the worker has one.
+// See `handlePush`.
 worker.addEventListener("push", (event) => {
   event.waitUntil(
     handlePush(
@@ -93,6 +97,8 @@ worker.addEventListener("push", (event) => {
         registration: worker.registration,
         quietWhileOpen: () => readQuietWhileOpen(caches),
         notifyKeys: () => readNotifyKeys(caches),
+        notifyDetail: () => readNotifyDetail(caches),
+        badge: badgeApi(worker.navigator),
       },
       event.data?.text(),
     ),

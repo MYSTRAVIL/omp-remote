@@ -155,7 +155,7 @@ test("after the socket drops the client reconnects, re-attaches and re-syncs", a
   const m1 = new FakeAgent(agent, "m1");
   m1.connect(first);
   m1.relay();
-  expect(m1.frames).toEqual([{ t: "sync" }]);
+  expect(m1.frames).toEqual([{ t: "sync", id: expect.any(String) }]);
 
   // Drop the socket: a reconnect is scheduled but no new socket yet.
   first.fireClose();
@@ -169,7 +169,10 @@ test("after the socket drops the client reconnects, re-attaches and re-syncs", a
   expect(second.attaches()).toEqual(["m1"]);
   m1.connect(second);
   m1.relay();
-  expect(m1.frames).toEqual([{ t: "sync" }, { t: "sync" }]);
+  expect(m1.frames).toEqual([
+    { t: "sync", id: expect.any(String) },
+    { t: "sync", id: expect.any(String) },
+  ]);
 
   // A snapshot over the RECONNECTED socket lands in the tree — proving the
   // persistent channel still decodes on the new transport.
@@ -226,7 +229,11 @@ test("a control frame sent while disconnected is flushed on reconnect after the 
   // The agent opens the buffered prompt, then the sync the new hello's ack pulls.
   m1.connect(second);
   m1.relay();
-  expect(m1.frames).toEqual([{ t: "sync" }, prompt, { t: "sync" }]);
+  expect(m1.frames).toEqual([
+    { t: "sync", id: expect.any(String) },
+    prompt,
+    { t: "sync", id: expect.any(String) },
+  ]);
 });
 
 test("outbound queue overflow drops the OLDEST buffered line", async () => {
@@ -377,7 +384,10 @@ test("wake() forces a fresh reconnect and resync without waiting for a close", a
   // The fresh socket says hello again, and the agent's ack pulls a resync.
   m1.connect(second);
   m1.relay();
-  expect(m1.frames).toEqual([{ t: "sync" }, { t: "sync" }]);
+  expect(m1.frames).toEqual([
+    { t: "sync", id: expect.any(String) },
+    { t: "sync", id: expect.any(String) },
+  ]);
 
   // A late frame on the orphaned socket #0 is ignored; the fresh socket drives.
   first.deliver(m1.seal({ t: "sessions", sessions: [meta] }));

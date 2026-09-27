@@ -18,6 +18,12 @@ export interface MachineSessions {
   syncing?: true;
   /** The relay's live machine list no longer carries it: rows are its last known list. */
   offline?: true;
+  /**
+   * Its host-agent could not open this phone's lines: it serves another
+   * pairing, so this phone has to pair with it again (see
+   * `AppStore.markUnpaired`). No snapshot is coming, so it is not syncing.
+   */
+  unpaired?: true;
 }
 
 export interface SessionNode {
@@ -40,6 +46,8 @@ export interface MachineNode {
   syncing?: true;
   /** The relay's live machine list no longer carries it: rows are its last known list. */
   offline?: true;
+  /** This phone has to pair with it again; see {@link MachineSessions.unpaired}. */
+  unpaired?: true;
 }
 
 /**
@@ -59,6 +67,7 @@ export function assembleTree(machines: MachineSessions[]): MachineNode[] {
       ...(m.stale ? { stale: m.stale } : {}),
       ...(m.syncing ? { syncing: m.syncing } : {}),
       ...(m.offline ? { offline: m.offline } : {}),
+      ...(m.unpaired ? { unpaired: m.unpaired } : {}),
     }));
 }
 

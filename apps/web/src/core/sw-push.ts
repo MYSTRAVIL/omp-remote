@@ -4,9 +4,10 @@
  * the clear and a notice sealed with that machine's notify key, which only
  * this device and the machine hold, so the relay carrying it reads nothing
  * (spec §4.3). An attention notice shows one notification per session, named
- * after it; a clear notice closes it. A push this device can't open (no
- * payload from an older agent, a machine not paired here, a damaged or
- * foreign envelope) shows one generic notification.
+ * after it; a clear notice closes it, or says the session no longer waits when
+ * closing it would leave none showing (see `clearSession`). A push this device
+ * can't open (no payload from an older agent, a machine not paired here, a
+ * damaged or foreign envelope) shows one generic notification.
  */
 
 import {
@@ -16,7 +17,8 @@ import {
   openNotice,
 } from "@omp-remote/protocol";
 import { z } from "zod";
-import type { NotifyMachine } from "./sw-caches";
+import { type BadgeApi, showBadge } from "./app-badge";
+import type { NotifyDetail, NotifyMachine } from "./sw-caches";
 
 export const ATTENTION_TAG = "omp-remote-attention";
 /** The tag of the notification a quiet push shows and closes at once. */
@@ -37,6 +39,9 @@ const REASON_TEXT: Record<NoticeReason, string> = {
   idle: "Waiting for you",
 };
 
+/** What a session's notification says once the session no longer waits. */
+export const SETTLED_BODY = "No longer waiting";
+
 /** The session a notification stands for; tapping it opens that session. */
 export const NotificationTarget = z.object({
   machineId: z.string().min(1),
@@ -50,9 +55,21 @@ export const OpenSessionMessage = NotificationTarget.extend({
 });
 export type OpenSessionMessage = z.infer<typeof OpenSessionMessage>;
 
+/**
+ * What a session's notification carries: the session a tap opens, and
+ * `settled` once it says the session no longer waits (see `clearSession`).
+ */
+const SessionNotificationData = NotificationTarget.extend({
+  settled: z.literal(true).optional(),
+});
+type SessionNotificationData = z.infer<typeof SessionNotificationData>;
+
+/** What starts the tag of each session's notification. */
+const SESSION_TAG_PREFIX = "session:";
+
 /** A session's notification tag: one notification per session, each replacing the last. */
 export function sessionTag(machineId: string, sessionId: string): string {
-  return `session:${machineId}:${sessionId}`;
+  return `${SESSION_TAG_PREFIX}${machineId}:${sessionId}`;
 }
 
 /** The address a new window opens at for a tapped session. */
@@ -92,19 +109,24 @@ export interface NotificationSpec {
   silent?: boolean;
   icon?: string;
   badge?: string;
-  /** The session a tap opens. */
-  data?: NotificationTarget;
+  /** The session a tap opens, and whether it no longer waits. */
+  data?: SessionNotificationData;
 }
 
 /** A notification this worker is showing, as `getNotifications` returns it. */
 export interface ShownNotification {
+  readonly tag: string;
+  readonly title: string;
+  /** What it was shown with: {@link NotificationSpec.data}, as the browser kept it. */
+  readonly data: unknown;
   close(): void;
 }
 
 /** The slice of a `ServiceWorkerRegistration` used to show and close notifications. */
 export interface NotificationShower {
   showNotification(title: string, options: NotificationSpec): Promise<void>;
-  getNotifications(filter: {
+  /** The notifications showing under `filter.tag`; every one without a filter. */
+  getNotifications(filter?: {
     tag: string;
   }): Promise<readonly ShownNotification[]>;
 }
@@ -132,6 +154,10 @@ export interface PushDeps {
   quietWhileOpen(): Promise<boolean>;
   /** Each paired machine's notify key and name, as the page last saved them. */
   notifyKeys(): Promise<ReadonlyMap<string, NotifyMachine>>;
+  /** Settings > Notifications > "Notification detail" level. */
+  notifyDetail(): Promise<NotifyDetail>;
+  /** The worker's app badge; undefined where the browser has none. */
+  badge?: BadgeApi;
 }
 
 /** A notice this device opened, with the machine that sealed it and its name here. */
@@ -178,12 +204,14 @@ async function appOnScreen(clients: ClientsLike): Promise<boolean> {
  * Show a notification silently under its own tag and close it at once, for a
  * push that should show the user nothing; notifications already showing stay.
  * The subscription promised `userVisibleOnly`, so every push must show one.
- * Chromium excuses a push that shows none while a page of the site is on
- * screen (chrome/browser/push_messaging/push_messaging_notification_manager.cc).
- * WebKit never does: it counts each push that ends without `showNotification`
- * as silent, never resets the count, and at the third removes the
- * subscription (`maxSilentPushCount` in Source/WebKit/Shared/WebPushDaemonConstants.h,
+ * WebKit counts each push that ends without `showNotification` as silent,
+ * never resets the count, and at the third removes the subscription
+ * (`maxSilentPushCount` in Source/WebKit/Shared/WebPushDaemonConstants.h,
  * enforced by `PushService::incrementSilentPushCount` in Source/WebKit/webpushd/PushService.mm).
+ * Chromium counts the notifications still showing once a push is handled
+ * instead, so one shown and closed here counts for nothing there: it excuses
+ * a push that leaves none only while a page of the site is on screen (see
+ * `clearSession`).
  */
 async function showQuietly(reg: NotificationShower): Promise<void> {
   await reg.showNotification(ATTENTION_TITLE, {
@@ -202,23 +230,151 @@ async function showQuietly(reg: NotificationShower): Promise<void> {
  */
 function sessionNotification(
   notice: Extract<OpenedNotice, { kind: "attention" }>,
+  detail: NotifyDetail,
 ): { title: string; options: NotificationSpec } {
+  const tag = sessionTag(notice.machineId, notice.sessionId);
+  const data = { machineId: notice.machineId, sessionId: notice.sessionId };
+
+  if (detail === "private") {
+    return {
+      title: ATTENTION_TITLE,
+      options: {
+        body: ATTENTION_BODY,
+        tag,
+        renotify: true,
+        icon: NOTIFICATION_ICON,
+        badge: NOTIFICATION_BADGE,
+        data,
+      },
+    };
+  }
+
   const where = [notice.label, notice.project]
     .filter((part) => part !== "")
     .join(" · ");
   const reason = REASON_TEXT[notice.reason];
+
+  if (detail === "session") {
+    const why = reason;
+    return {
+      title: notice.title || notice.project || "Session",
+      options: {
+        body: where === "" ? why : `${where}\n${why}`,
+        tag,
+        renotify: true,
+        icon: NOTIFICATION_ICON,
+        badge: NOTIFICATION_BADGE,
+        data,
+      },
+    };
+  }
+
+  // preview: original behavior
   const why = notice.detail === "" ? reason : `${reason}: ${notice.detail}`;
   return {
     title: notice.title || notice.project || "Session",
     options: {
       body: where === "" ? why : `${where}\n${why}`,
-      tag: sessionTag(notice.machineId, notice.sessionId),
+      tag,
       renotify: true,
       icon: NOTIFICATION_ICON,
       badge: NOTIFICATION_BADGE,
-      data: { machineId: notice.machineId, sessionId: notice.sessionId },
+      data,
     },
   };
+}
+
+/**
+ * Set the app badge to the sessions whose notification is showing and still
+ * waiting (the `session:` tags not settled), clearing it at none. A worker
+ * without a badge, or one that fails, leaves the badge as it is: the push is
+ * handled either way.
+ */
+async function badgeShownSessions(deps: PushDeps): Promise<void> {
+  if (deps.badge === undefined) return;
+  try {
+    const shown = await deps.registration.getNotifications();
+    await showBadge(
+      deps.badge,
+      shown.filter(
+        (notification) =>
+          notification.tag.startsWith(SESSION_TAG_PREFIX) &&
+          !isSettled(notification),
+      ).length,
+    );
+  } catch {
+    // The notifications can't be listed: the badge keeps what it shows.
+  }
+}
+
+/** A session's notification that says the session no longer waits. */
+function isSettled(notification: ShownNotification): boolean {
+  const data = SessionNotificationData.safeParse(notification.data);
+  return data.success && data.data.settled === true;
+}
+
+/**
+ * Close every notification that only says its session no longer waits (see
+ * `clearSession`): once another notification shows, or the app is on screen,
+ * nothing needs it. Notifications that can't be listed stay.
+ */
+export async function closeSettled(
+  reg: Pick<NotificationShower, "getNotifications">,
+): Promise<void> {
+  try {
+    for (const shown of await reg.getNotifications())
+      if (isSettled(shown)) shown.close();
+  } catch {
+    // The notifications can't be listed: they stay until dismissed.
+  }
+}
+
+/**
+ * Close a session's notification for its clear notice, unless that would
+ * leave none showing while no window of the app is on screen. Once a push is
+ * handled, Chromium counts this app's notifications still showing; with none
+ * and no page of the site on screen it spends the site's silent-push budget
+ * (about six a day at most), and once that is spent it shows its own "This
+ * site has been updated in the background" notification, which names no
+ * session (`DidCountVisibleNotifications` and `ProcessSilentPush` in
+ * chrome/browser/push_messaging/push_messaging_notification_manager.cc). So
+ * the last one showing is replaced, silently, by one saying the session no
+ * longer waits, which goes once another notification shows, the app comes on
+ * screen, or the user dismisses it; a tap on it still opens the session. A
+ * clear whose notification is already gone can only be shown and closed: the
+ * page tells the machine when the user has the session on screen, so the
+ * machine sends none for a notification the page closed.
+ */
+async function clearSession(
+  deps: PushDeps,
+  notice: Extract<OpenedNotice, { kind: "clear" }>,
+): Promise<void> {
+  const reg = deps.registration;
+  const tag = sessionTag(notice.machineId, notice.sessionId);
+  const showing = await reg.getNotifications();
+  const own = showing.filter((shown) => shown.tag === tag);
+  const last = own[0];
+  const othersShow = showing.some(
+    (shown) => shown.tag !== tag && shown.tag !== QUIET_TAG,
+  );
+  if (last !== undefined && !othersShow && !(await appOnScreen(deps.clients))) {
+    await reg.showNotification(last.title, {
+      body: SETTLED_BODY,
+      tag,
+      silent: true,
+      icon: NOTIFICATION_ICON,
+      badge: NOTIFICATION_BADGE,
+      data: {
+        machineId: notice.machineId,
+        sessionId: notice.sessionId,
+        settled: true,
+      },
+    });
+    return;
+  }
+  for (const shown of own) shown.close();
+  // Closing one is not showing one: this push still shows its own.
+  await showQuietly(reg);
 }
 
 /**
@@ -228,8 +384,11 @@ function sessionNotification(
  * app is open" is on, a notice is shown silently and closed at once.
  * Otherwise an attention notice shows (or replaces) its session's
  * notification, and a push this device can't open shows the generic one,
- * whose shared tag collapses repeats. A clear notice closes its session's
- * notification.
+ * whose shared tag collapses repeats; either closes the notifications that
+ * only say a session no longer waits. A clear notice closes its session's
+ * notification, or says the session no longer waits (see `clearSession`).
+ * Showing or closing a session's notification sets the app badge to the
+ * sessions still waiting with one showing; a quiet or generic push leaves it.
  */
 export async function handlePush(
   deps: PushDeps,
@@ -238,10 +397,8 @@ export async function handlePush(
   const reg = deps.registration;
   const opened = await openPayload(deps, payload);
   if (opened?.kind === "clear") {
-    const tag = sessionTag(opened.machineId, opened.sessionId);
-    for (const shown of await reg.getNotifications({ tag })) shown.close();
-    // Closing one is not showing one: this push still shows its own.
-    await showQuietly(reg);
+    await clearSession(deps, opened);
+    await badgeShownSessions(deps);
     return;
   }
   if ((await appOnScreen(deps.clients)) && (await deps.quietWhileOpen())) {
@@ -256,10 +413,14 @@ export async function handlePush(
       icon: NOTIFICATION_ICON,
       badge: NOTIFICATION_BADGE,
     });
+    await closeSettled(reg);
     return;
   }
-  const { title, options } = sessionNotification(opened);
+  const detail = await deps.notifyDetail();
+  const { title, options } = sessionNotification(opened, detail);
   await reg.showNotification(title, options);
+  await closeSettled(reg);
+  await badgeShownSessions(deps);
 }
 
 /**

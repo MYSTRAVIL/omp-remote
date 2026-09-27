@@ -1,11 +1,14 @@
-import type {
-  CatalogModel,
-  CatalogRole,
-  HistoryEntry,
-  InteractionFrame,
-  SealedFrame,
-  SessionMeta,
-  UplinkFrame,
+import {
+  type AttentionFrame,
+  type CatalogModel,
+  type CatalogRole,
+  type HistoryEntry,
+  type InteractionFrame,
+  type ReplayEndFrame,
+  type SealedFrame,
+  type SessionMeta,
+  type UplinkFrame,
+  attentionSettledBy,
 } from "@omp-remote/protocol";
 import type { MachineCatalogs } from "./machine-catalogs";
 import type { MachinePresence } from "./machine-presence";
@@ -19,6 +22,7 @@ import {
   type TranscriptState,
   claimMediaFetch,
   emptyTranscript,
+  failLocalEcho,
   reduceTranscript,
   restartMediaTransfers,
 } from "./transcript";
@@ -59,6 +63,34 @@ interface PendingQueue {
   snapshot: readonly InteractionFrame[] | undefined;
 }
 
+/**
+ * A session's host said it waits on the user (`attention`): for its turn
+ * (`idle`, the agent settled) or for a tool approval asked at the desk
+ * (`approval`). Each flag is a new wait.
+ */
+interface AttentionWait {
+  machineId: string;
+  reason: AttentionFrame["reason"];
+  /** The host's `at`, when the frame carries one: its host-agent retains the
+   *  wait and replays it with that `at` until a frame settles it. */
+  at: number | undefined;
+}
+
+/**
+ * A replay a machine is sending, between its `replayStart` and `replayEnd`,
+ * checked against the interactions and waits shown from it before it began.
+ */
+interface ReplayCheck {
+  /** Interactions shown before the replay and not re-sent yet, by session. */
+  readonly unconfirmed: Map<string, Set<string>>;
+  /**
+   * Waits shown before the replay and not re-sent yet, by session. A replay
+   * sends a session's history before its wait, so until then a frame for that
+   * session may be history from before the wait and settles nothing.
+   */
+  readonly doubted: Map<string, AttentionWait>;
+}
+
 /** The model/role/effort catalog delivered by the agent for a session. */
 export interface SessionCatalog {
   models: CatalogModel[];
@@ -94,12 +126,19 @@ const NO_PENDING: readonly InteractionFrame[] = [];
 export class AppStore {
   readonly #machines = new Map<string, MachineSessions>();
   readonly #transcripts = new Map<string, TranscriptState>();
-  /** Sessions the host flagged as needing input, mapped to the machine that
-   *  raised the flag so a disconnect/removal can retire it (spec §5). Opening a
-   *  session clears its flag; a still-pending interaction keeps it lit anyway. */
-  readonly #attention = new Map<string, string>();
+  /** Sessions the host flagged as waiting on the user (spec §5), with the
+   *  machine that raised the flag so a disconnect/removal can retire it.
+   *  Opening a session clears its flag, and so does its agent starting work
+   *  again after an `idle` one; a still-pending interaction keeps
+   *  `needsAttention` lit anyway. */
+  readonly #attention = new Map<string, AttentionWait>();
   /** Pending user decisions per session; see {@link PendingQueue}. */
   readonly #pendingInteractions = new Map<string, PendingQueue>();
+  /** Waits the user saw here (opened, or flagged while open), by session: the
+   *  host's `at` of each, so a replay re-sending one does not flag it again. */
+  readonly #seenWaits = new Map<string, { machineId: string; at: number }>();
+  /** Replays machines are sending now, by machine; see {@link ReplayCheck}. */
+  readonly #replays = new Map<string, ReplayCheck>();
   #state: AppState = { selectedSessionId: undefined };
   /** Model/role/effort catalogs per session. */
   readonly #catalogs = new Map<
@@ -111,6 +150,15 @@ export class AppStore {
   readonly #now: () => number;
   /** Monotonic id source for optimistic local prompt echoes. */
   #promptSeq = 0;
+  /** Prompts this phone sent that no replay has settled yet, by `clientId`:
+   *  the session, its machine then, and the `#promptSeq` of the send. */
+  readonly #sent = new Map<
+    string,
+    { sessionId: string; machineId: string | undefined; seq: number }
+  >();
+  /** Per machine, the last `sync` this phone sent it and the `#promptSeq`
+   *  then; see {@link noteSync}. */
+  readonly #syncs = new Map<string, { id: string; upTo: number }>();
   /** A phone-initiated spawn awaiting the host to report its session. */
   #pendingSpawn: PendingSpawn | undefined;
   /** Names given to machines on this device (`MachineLabels`), by machineId. */
@@ -152,6 +200,14 @@ export class AppStore {
    * list or any frame shows them back.
    */
   readonly #offline = new Set<string>();
+  /**
+   * Machines whose host-agent said it could not open this phone's lines: it
+   * serves another pairing, so this phone has to pair with it again. Kept
+   * across reconnects and machine lists, until a sealed exchange with the
+   * machine succeeds (its ack, or a frame that opened under this phone's
+   * keys) or the machine is forgotten here.
+   */
+  readonly #unpaired = new Set<string>();
   /** True once this load received live data (a machine list or a snapshot). */
   #live = false;
 
@@ -201,10 +257,12 @@ export class AppStore {
    * The relay link carrying every machine's frames was lost: the new one's
    * sync resends each list, and until then every machine's rows may be out of
    * date, so each syncs until its next snapshot. A pong can no longer vouch
-   * for rows `doubtLists` marked.
+   * for rows `doubtLists` marked, and a replay still being checked lost the
+   * rest of its frames with the socket.
    */
   awaitSnapshots(): void {
     this.#doubted.clear();
+    this.#replays.clear();
     let changed = false;
     for (const id of this.#machines.keys()) {
       if (this.#syncing.has(id)) continue;
@@ -266,13 +324,15 @@ export class AppStore {
    * so its sessions (and an open one's draft) stay put until it returns; a
    * cached machine never seen online this load is dropped. A disconnected
    * machine takes the attention flags and pending interactions it owned with
-   * it. Every listed machine counts as seen online now.
+   * it; its replay brings the pending ones back. Every listed machine counts
+   * as seen online now.
    */
   setMachineList(machineIds: string[]): void {
     this.#presence?.observe(machineIds, this.#now());
     const connected = new Set(machineIds);
     for (const id of [...this.#machines.keys()]) {
       if (connected.has(id)) continue;
+      this.#replays.delete(id);
       if (this.#cachedOnly.delete(id)) {
         this.#machines.delete(id);
         this.#stale.delete(id);
@@ -306,8 +366,8 @@ export class AppStore {
   /**
    * Drop a machine this browser no longer pairs with ("Forget on this
    * device"): its session list and every transcript, attention flag, pending
-   * interaction and catalog it owned. Unlike a disconnect, nothing is kept for
-   * a return — the rebuilt client never attaches to it again.
+   * interaction and catalog it owned. Unlike a disconnect, nothing is kept
+   * for a return — the rebuilt client never attaches to it again.
    */
   forgetMachine(machineId: string): void {
     // A paired-but-offline machine has no entry but may still have a cached
@@ -315,11 +375,14 @@ export class AppStore {
     this.#machineCatalogs?.forget(machineId);
     this.#presence?.forget(machineId);
     this.#history.delete(machineId);
+    this.#replays.delete(machineId);
+    this.#forgetSeenWaits(machineId, () => true);
     for (const [sessionId, gone] of this.#ended)
       if (gone.machineId === machineId) {
         this.#ended.delete(sessionId);
         this.#transcripts.delete(sessionId);
       }
+    this.#unpaired.delete(machineId);
     const machine = this.#machines.get(machineId);
     if (machine === undefined) return;
     this.#machines.delete(machineId);
@@ -336,20 +399,60 @@ export class AppStore {
   }
 
   /**
+   * `machineId`'s host-agent said it could not open this phone's lines: it
+   * serves another pairing. The tree asks the user to pair this phone with it
+   * again, and stops waiting for its snapshot, until `markPaired`.
+   */
+  markUnpaired(machineId: string): void {
+    if (this.#unpaired.has(machineId)) return;
+    this.#unpaired.add(machineId);
+    this.#emit();
+  }
+
+  /**
+   * A sealed exchange with `machineId` succeeded (its ack, or a frame, opened
+   * under this phone's keys): the pairing holds after all.
+   */
+  markPaired(machineId: string): void {
+    if (this.#unpaired.delete(machineId)) this.#emit();
+  }
+
+  /**
    * Apply a sealed frame received for `machineId`; any frame shows the machine
-   * online now, since only its live agent sends one. A `sessions` snapshot
-   * moves the machine tree and retires the sender's own attention + pending
-   * for any session it no longer lists; `attention` lights the tree badge;
-   * `interaction` queues a decision and `interactionEnd` (only from the owning
-   * machine) dismisses one; `msg`/`tool`/`state`/`jobs`/`controlError`/`bye`
-   * build the owning session's transcript, and a `bye` retires that session's
-   * attention + pending. A `history` answer is held per machine and project
-   * for Past sessions. Everything else is ignored.
+   * online now, since only its live agent sends one, and paired with this
+   * phone, since it opened here. A `sessions` snapshot moves the machine tree
+   * and retires the sender's own attention + pending for any session it no
+   * longer lists; `attention` starts a new wait on the user; `interaction`
+   * queues a decision and `interactionEnd` (only from the owning machine)
+   * dismisses one;
+   * `msg`/`tool`/`state`/`jobs`/`controlError`/`bye` build the owning
+   * session's transcript, a `state` at work again ends a wait for the user's
+   * turn, and a `bye` retires that session's attention + pending. A `history`
+   * answer is held per machine and project for Past sessions. `replayStart`
+   * and `replayEnd` bracket a replay (see `#beginReplay`), and inside one a
+   * re-sent interaction or attention confirms what it names. Everything else
+   * is ignored.
    */
   applyFrame(machineId: string, frame: SealedFrame): void {
     this.#presence?.observe([machineId], this.#now());
     this.#cachedOnly.delete(machineId);
     if (this.#offline.delete(machineId)) this.#emit();
+    this.markPaired(machineId);
+    if (frame.t === "replayStart") {
+      this.#beginReplay(machineId);
+      return;
+    }
+    if (frame.t === "replayEnd") {
+      this.#endReplay(machineId);
+      this.#settlePrompts(machineId, frame);
+      return;
+    }
+    const check = this.#replays.get(machineId);
+    if (frame.t === "interaction")
+      check?.unconfirmed.get(frame.sessionId)?.delete(frame.id);
+    // A re-sent attention decides its session's wait: the same `at` continues
+    // it, a new one replaces it.
+    if (frame.t === "attention") check?.doubted.delete(frame.sessionId);
     if (frame.t === "sessions") {
       const existing = this.#machines.get(machineId);
       this.#machines.set(machineId, {
@@ -373,6 +476,8 @@ export class AppStore {
       this.#retire(
         (owner, sessionId) => owner === machineId && !listed.has(sessionId),
       );
+      // The waits the user saw there went with them.
+      this.#forgetSeenWaits(machineId, (sessionId) => !listed.has(sessionId));
       this.#stale.delete(machineId);
       this.#syncing.delete(machineId);
       this.#doubted.delete(machineId);
@@ -419,11 +524,7 @@ export class AppStore {
       return;
     }
     if (frame.t === "attention") {
-      // Flag the session unless it's the one the user is already looking at.
-      if (frame.sessionId !== this.#state.selectedSessionId) {
-        this.#attention.set(frame.sessionId, machineId);
-        this.#emit();
-      }
+      this.#flagWait(machineId, frame);
       return;
     }
     if (frame.t === "interaction") {
@@ -436,6 +537,8 @@ export class AppStore {
       if (!queue.items.has(frame.id)) {
         queue.items.set(frame.id, frame);
         queue.snapshot = undefined;
+        // The session asks something new: it no longer waits on its flag.
+        this.#settleWait(machineId, frame, undefined);
         this.#emit();
       }
       return;
@@ -462,13 +565,21 @@ export class AppStore {
       const current =
         this.#transcripts.get(frame.sessionId) ?? emptyTranscript();
       const title = current.footer?.title;
+      const wasStreaming = current.footer?.streaming;
       reduceTranscript(current, frame);
       this.#transcripts.set(frame.sessionId, current);
-      // A session that says goodbye takes its attention + pending + catalog with it.
+      if (frame.t === "msg" || frame.t === "tool" || frame.t === "state")
+        this.#settleWait(machineId, frame, wasStreaming);
+      // A session that says goodbye takes its attention + pending + catalog
+      // with it.
       if (frame.t === "bye") {
         this.#attention.delete(frame.sessionId);
         this.#pendingInteractions.delete(frame.sessionId);
         this.#catalogs.delete(frame.sessionId);
+        this.#forgetSeenWaits(
+          machineId,
+          (sessionId) => sessionId === frame.sessionId,
+        );
         const meta = this.#machines
           .get(machineId)
           ?.sessions.find((s) => s.id === frame.sessionId);
@@ -481,9 +592,18 @@ export class AppStore {
   }
 
   select(sessionId: string | undefined): void {
-    // Opening a session clears its ordinary needs-attention flag; a still-pending
+    // Opening a session ends the wait its host flagged (the user has seen it,
+    // so a replay re-sending it does not flag it again); a still-pending
     // interaction keeps `needsAttention` true — that decision outlives a glance.
-    if (sessionId !== undefined) this.#attention.delete(sessionId);
+    if (sessionId !== undefined) {
+      const wait = this.#attention.get(sessionId);
+      this.#attention.delete(sessionId);
+      if (wait?.at !== undefined)
+        this.#seenWaits.set(sessionId, {
+          machineId: wait.machineId,
+          at: wait.at,
+        });
+    }
     this.#state = { ...this.#state, selectedSessionId: sessionId };
     this.#emit();
   }
@@ -574,6 +694,31 @@ export class AppStore {
     );
   }
 
+  /**
+   * How many listed sessions wait on the user (a pending interaction, or its
+   * host's flag): the app badge. Undefined while a machine's list is in
+   * doubt, since waits may then be missing or stale; a machine this phone has
+   * to pair with again sends no list to wait for.
+   */
+  waitingCount(): number | undefined {
+    if (
+      !this.#live ||
+      [...this.#syncing].some(
+        (id) => !this.#offline.has(id) && !this.#unpaired.has(id),
+      )
+    )
+      return undefined;
+    let count = 0;
+    for (const machine of this.#displayedMachines())
+      for (const { id } of machine.sessions)
+        if (
+          this.#pendingInteractions.get(id)?.machineId === machine.machineId ||
+          this.#attention.get(id)?.machineId === machine.machineId
+        )
+          count += 1;
+    return count;
+  }
+
   /** The selected session's metadata, or undefined if none/unknown. An ended
    *  session stays selected (its tab open) after the host stops listing it. */
   selectedSession(): SessionMeta | undefined {
@@ -630,13 +775,15 @@ export class AppStore {
    * Optimistically echo a just-sent prompt into its session transcript so the
    * user sees it immediately, before the agent's own message frame lands. A
    * mid-turn `steer` in particular is only echoed by the agent once consumed;
-   * this bridges that gap. `reduceTranscript` adopts the entry in place when the
-   * real `msg` frame arrives (matched by role + text), so it never duplicates.
+   * this bridges that gap. The echo waits last until the host's user message
+   * confirms it (by `clientId`, or by text from an older host), so it never
+   * duplicates; see `reduceTranscript`.
    */
   addPendingPrompt(
     sessionId: string,
     text: string,
     mode: "steer" | "followUp",
+    clientId?: string,
   ): void {
     const transcript = this.#transcripts.get(sessionId) ?? emptyTranscript();
     this.#promptSeq += 1;
@@ -647,9 +794,25 @@ export class AppStore {
       text,
       streaming: false,
       pending: mode,
+      ...(clientId === undefined ? {} : { clientId }),
     });
+    if (clientId !== undefined)
+      this.#sent.set(clientId, {
+        sessionId,
+        machineId: this.machineIdForSession(sessionId),
+        seq: this.#promptSeq,
+      });
     this.#transcripts.set(sessionId, transcript);
     this.#emit();
+  }
+
+  /**
+   * This phone asks `machineId` for a replay with the `sync` named `id`. The
+   * host handles this phone's frames in order, so the replay answering it
+   * knows every prompt sent before it: see `#settlePrompts`.
+   */
+  noteSync(machineId: string, id: string): void {
+    this.#syncs.set(machineId, { id, upTo: this.#promptSeq });
   }
 
   /**
@@ -664,23 +827,31 @@ export class AppStore {
   }
 
   /** Each machine's rows as the tree shows them: the name given on this device,
-   *  whether it is offline, and every session's live title. */
+   *  whether it is offline or has to pair with this phone again, and every
+   *  listed session with its live title. */
   #displayedMachines(): MachineSessions[] {
     return [...this.#machines.values()].map((machine) => ({
       ...machine,
       label: this.#labels.get(machine.machineId) ?? machine.label,
       catalog: this.#machineCatalogs?.catalogFor(machine.machineId),
       ...(this.#stale.has(machine.machineId) ? { stale: true as const } : {}),
-      ...(this.#syncing.has(machine.machineId)
-        ? { syncing: true as const }
-        : {}),
+      ...(this.#unpaired.has(machine.machineId)
+        ? { unpaired: true as const }
+        : this.#syncing.has(machine.machineId)
+          ? { syncing: true as const }
+          : {}),
       ...(this.#offline.has(machine.machineId)
         ? { offline: true as const }
         : {}),
-      sessions: machine.sessions.map((session) => {
-        const live = this.#transcripts.get(session.id)?.footer?.title;
-        return live ? { ...session, title: live } : session;
-      }),
+      sessions: machine.sessions
+        // A headless run (`omp -p`, rpc) its host cannot reach is not listed:
+        // nothing on the host shows it and no room carries it, so its row
+        // could only say "Unreachable". An interactive one keeps its row.
+        .filter((s) => !(s.headless === true && s.reachable === false))
+        .map((session) => {
+          const live = this.#transcripts.get(session.id)?.footer?.title;
+          return live ? { ...session, title: live } : session;
+        }),
     }));
   }
 
@@ -706,22 +877,155 @@ export class AppStore {
 
   /**
    * Dismiss a specific interaction, dropping it from its session's queue and
-   * emitting only when something changed. Shared by the reply-sent path
-   * (`main.ts`, after a successful send) and an owning machine's `interactionEnd`
-   * — both retire the same prompt. Drops the whole queue once empty so
-   * `needsAttention` / `pendingInteractions` fall back to "none". No-op if the
-   * session or id is unknown.
+   * emitting only when something changed. Shared by the
+   * reply-sent path (`main.ts`, after a successful send) and an owning
+   * machine's `interactionEnd` — both retire the same prompt. Drops the whole
+   * queue once empty so `needsAttention` / `pendingInteractions` fall back to
+   * "none". No-op if the session or id is unknown.
    */
   dismissInteraction(sessionId: string, id: string): void {
     const queue = this.#pendingInteractions.get(sessionId);
-    if (queue === undefined || !queue.items.delete(id)) return;
-    if (queue.items.size === 0) {
-      this.#pendingInteractions.delete(sessionId);
-    } else {
-      queue.snapshot = undefined;
+    if (queue !== undefined && this.#dropInteraction(queue, sessionId, id))
+      this.#emit();
+  }
+
+  /** Drop an interaction that cleared; false when unknown. */
+  #dropInteraction(
+    queue: PendingQueue,
+    sessionId: string,
+    id: string,
+  ): boolean {
+    if (!queue.items.delete(id)) return false;
+    if (queue.items.size === 0) this.#pendingInteractions.delete(sessionId);
+    else queue.snapshot = undefined;
+    return true;
+  }
+
+  /** Forget which waits the user saw in `machineId`'s sessions that `gone`
+   *  matches (the session ended or was forgotten). */
+  #forgetSeenWaits(
+    machineId: string,
+    gone: (sessionId: string) => boolean,
+  ): void {
+    for (const [sessionId, seen] of this.#seenWaits)
+      if (seen.machineId === machineId && gone(sessionId))
+        this.#seenWaits.delete(sessionId);
+  }
+
+  /**
+   * A session's host says it waits on the user. A replay re-sending the wait
+   * shown (the same host `at`) continues it; any other flag replaces it. The
+   * session open on screen is not flagged, nor a wait the user already opened
+   * here.
+   */
+  #flagWait(machineId: string, frame: AttentionFrame): void {
+    const { sessionId, at } = frame;
+    if (sessionId === this.#state.selectedSessionId) {
+      if (at !== undefined) this.#seenWaits.set(sessionId, { machineId, at });
+      return;
     }
+    const seen = this.#seenWaits.get(sessionId);
+    if (seen?.machineId === machineId && seen.at === at) return;
+    const earlier = this.#attention.get(sessionId);
+    if (
+      at !== undefined &&
+      earlier?.machineId === machineId &&
+      earlier.at === at
+    )
+      return;
+    this.#attention.set(sessionId, { machineId, reason: frame.reason, at });
     this.#emit();
   }
+
+  /**
+   * End the session's wait when `frame` from its host settles it (see
+   * `attentionSettledBy`), as its host-agent does: the row, the badge,
+   * the push and a later replay agree. A wait a replay has not re-sent yet
+   * settles nothing: the frame may be history from before the wait began.
+   */
+  #settleWait(
+    machineId: string,
+    frame: UplinkFrame,
+    wasStreaming: boolean | undefined,
+  ): void {
+    if (!("sessionId" in frame)) return;
+    const { sessionId } = frame;
+    const wait = this.#attention.get(sessionId);
+    if (wait?.machineId !== machineId) return;
+    if (this.#replays.get(machineId)?.doubted.has(sessionId)) return;
+    if (!attentionSettledBy(wait.reason, frame, wasStreaming)) return;
+    this.#attention.delete(sessionId);
+  }
+
+  /**
+   * `machineId` starts a replay: its host re-sends everything it still
+   * retains, then says `replayEnd`. Each interaction and wait shown from it
+   * is unconfirmed until the replay re-sends it. A replay the phone did not
+   * ask for (another phone's `sync`, the host's reconnect) is checked alike.
+   * The host queues each replay whole on its one uplink, so replays never
+   * interleave; a start while one is open means that one was cut short (its
+   * socket dropped before the end), and this one takes its place.
+   */
+  #beginReplay(machineId: string): void {
+    const unconfirmed = new Map<string, Set<string>>();
+    for (const [sessionId, queue] of this.#pendingInteractions)
+      if (queue.machineId === machineId)
+        unconfirmed.set(sessionId, new Set(queue.items.keys()));
+    const doubted = new Map<string, AttentionWait>();
+    for (const [sessionId, wait] of this.#attention)
+      if (wait.machineId === machineId) doubted.set(sessionId, wait);
+    this.#replays.set(machineId, { unconfirmed, doubted });
+  }
+
+  /**
+   * `machineId`'s replay is complete: what it showed from before that the
+   * replay did not re-send settled while this phone could not hear (an ask
+   * answered at the desk, a turn taken), so it goes. An end with no replay
+   * open changes nothing.
+   */
+  #endReplay(machineId: string): void {
+    const check = this.#replays.get(machineId);
+    if (check === undefined) return;
+    this.#replays.delete(machineId);
+    let changed = false;
+    for (const [sessionId, ids] of check.unconfirmed) {
+      const queue = this.#pendingInteractions.get(sessionId);
+      if (queue?.machineId !== machineId) continue;
+      for (const id of ids)
+        changed = this.#dropInteraction(queue, sessionId, id) || changed;
+    }
+    for (const [sessionId, wait] of check.doubted) {
+      if (this.#attention.get(sessionId) !== wait) continue;
+      this.#attention.delete(sessionId);
+      changed = true;
+    }
+    if (changed) this.#emit();
+  }
+
+  /**
+   * The replay answering this phone's last `sync` to `machineId` is complete:
+   * a prompt sent there before that sync which the replay neither confirmed
+   * (its user message) nor lists as still queued never reached the host —
+   * lost with a dropped link — so its echo stops waiting and shows as not
+   * delivered. A replay answering another phone's sync, or none, settles
+   * nothing: a prompt of ours may still be on its way.
+   */
+  #settlePrompts(machineId: string, frame: ReplayEndFrame): void {
+    const sync = this.#syncs.get(machineId);
+    if (frame.syncId === undefined || sync?.id !== frame.syncId) return;
+    this.#syncs.delete(machineId);
+    const queued = new Set(frame.queued);
+    let changed = false;
+    for (const [clientId, sent] of this.#sent) {
+      if (sent.machineId !== machineId || sent.seq > sync.upTo) continue;
+      if (queued.has(clientId)) continue;
+      this.#sent.delete(clientId);
+      const transcript = this.#transcripts.get(sent.sessionId);
+      if (transcript && failLocalEcho(transcript, clientId)) changed = true;
+    }
+    if (changed) this.#emit();
+  }
+
   /**
    * The model/role/effort catalog for a session, or a shared empty default
    * when the agent has not sent one yet.
@@ -752,8 +1056,8 @@ export class AppStore {
    * machine's authoritative snapshot; the caller emits once afterwards.
    */
   #retire(drop: (owner: string, sessionId: string) => boolean): void {
-    for (const [sessionId, owner] of this.#attention)
-      if (drop(owner, sessionId)) this.#attention.delete(sessionId);
+    for (const [sessionId, wait] of this.#attention)
+      if (drop(wait.machineId, sessionId)) this.#attention.delete(sessionId);
     for (const [sessionId, queue] of this.#pendingInteractions)
       if (drop(queue.machineId, sessionId))
         this.#pendingInteractions.delete(sessionId);

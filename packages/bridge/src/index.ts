@@ -11,7 +11,9 @@ import type {
 } from "@oh-my-pi/pi-coding-agent";
 import {
   type CatalogRole,
+  FeedMsgIds,
   type SessionMeta,
+  type UplinkFrame,
   normalizeAskQuestions,
   parseXdevWrite,
 } from "@omp-remote/protocol";
@@ -21,6 +23,7 @@ import {
   type PromptDispatchRoute,
   bridgeLoggerDiagnostic,
 } from "./diagnostics";
+import { historyFrames, textOf } from "./history";
 import { runShadowAsk, runToolApproval } from "./interactions";
 import { chunkImage, imagesOf } from "./media-chunker";
 import {
@@ -62,19 +65,6 @@ function shouldGate(gate: ApprovalGate, toolName: string): boolean {
   if (gate.mode === "off") return false;
   if (gate.mode === "all") return true;
   return gate.tools.has(toolName);
-}
-
-function textOf(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content))
-    return content
-      .map((c) =>
-        c && typeof c === "object" && "text" in c && typeof c.text === "string"
-          ? c.text
-          : "",
-      )
-      .join("");
-  return "";
 }
 
 /** Pin the first non-empty session name; once pinned, later re-titles are ignored. */
@@ -139,6 +129,8 @@ function sessionMeta(ctx: ExtensionContext, title: string): SessionMeta {
     pid: process.pid,
     startedAt: Date.now(),
     spawnId: process.env.OMP_REMOTE_SPAWN_ID,
+    // No TUI (`omp -p`, rpc): the phone hides it once it is unreachable.
+    ...(ctx.hasUI ? {} : { headless: true as const }),
   };
 }
 
@@ -550,7 +542,7 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     next.onResourceChunk((frame) => assembler.chunk(frame));
     next.onResourceAbort((transferId) => assembler.abort(transferId));
     next.onPrompt(
-      guard((text, mode, attachments) => {
+      guard((text, mode, attachments, clientId) => {
         const ids = attachments ?? [];
         const resolved =
           ids.length > 0
@@ -561,6 +553,11 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
             event: "bridge_operation_failed",
             code: "attachment-unresolved",
           });
+          next.emitControlFailed(
+            "prompt",
+            "The attached image never reached this machine, so the message was not sent.",
+            clientId,
+          );
           return;
         }
         const route = deliverPrompt(pi, ctx, text, mode, resolved.resources);
@@ -575,6 +572,9 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
   // The bridge is keyed on the session id, so each switch re-keys it: `bye` on
   // the old id, then `hello` with fresh meta. `generation` lets a later attach
   // or a shutdown supersede an attach still awaiting its token or connect.
+  // Every (re)connect then re-sends what the agent may have lost with a restart
+  // (it keeps nothing on disk): the feed's recent transcript and, through
+  // `publish`, the mode's current state, forced past the catalog's dedup.
   let attachedId: string | undefined;
   let generation = 0;
   const detach = (): void => {
@@ -591,7 +591,6 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     detach();
     const current = generation;
     pinnedTitle = undefined;
-    lastCatalogKey = undefined;
     mediaEmitted.clear();
     xdevDeviceByCall.clear();
     attachedId = ctx.sessionManager.getSessionId();
@@ -601,17 +600,34 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     if (isSubagentSession(ctx)) return;
     const token = await ipcToken;
     if (token === undefined || current !== generation) return;
-    const next = new SessionBridge({
+    const meta = sessionMeta(ctx, currentTitle());
+    const next: SessionBridge = new SessionBridge({
       token,
       path: ipcPath(),
-      meta: sessionMeta(ctx, currentTitle()),
+      meta,
       role,
       diagnostic,
+      // Only the IPC feed carries the transcript; Collab re-sends its own
+      // when the agent's guest rejoins the room.
+      backfill: (): UplinkFrame[] => {
+        if (role !== undefined || bridge !== next) return [];
+        try {
+          return historyFrames(meta.id, ctx.sessionManager.getBranch());
+        } catch {
+          diagnostic({
+            event: "bridge_operation_failed",
+            code: "callback-failed",
+          });
+          return [];
+        }
+      },
+      onConnected: () => {
+        if (bridge === next) publish();
+      },
     });
     bridge = next;
     wire(next);
     await next.start();
-    if (current === generation) publish();
   };
   // True when omp now runs a session other than the one the bridge announced:
   // a `session_switch` to a new id, or a switch omp rolled back after emitting it.
@@ -721,6 +737,7 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
       },
       () => {
         publishState(ctx);
+        publishJobs(ctx);
         publishCatalog(ctx, true);
       },
     );
@@ -795,23 +812,26 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     }
   });
 
-  // The streaming assistant message's row and the text last sent for it. omp's
-  // `message_update` carries no message id, but every snapshot of one message
-  // shares its `timestamp`, so that keys the row.
+  // omp gives a message no id, but every event for one message shares its
+  // `timestamp`: role + timestamp key its row (`FeedMsgIds`), the same keys the
+  // history re-send uses, and a later message with the same millisecond gets
+  // its own row. `streamed` is the reply row last sent and its text.
+  const feedIds = new FeedMsgIds();
   let streamed: { msgId: string; text: string } | undefined;
   pi.on(
     "message_update",
     guard((event: MessageUpdateEvent) => {
       const message = event.message;
       if (message.role !== "assistant") return;
-      const msgId = `assistant-${message.timestamp}`;
+      const msgId = feedIds.id("assistant", message.timestamp);
       const text = textOf(message.content);
       // Thinking and tool-call deltas leave the text empty or unchanged; a
       // frame for each would only churn the sealed channel and the phone.
       const unchanged = streamed?.msgId === msgId && streamed.text === text;
       if (text !== "" && !unchanged) {
+        const phase = streamed?.msgId === msgId ? "update" : "start";
         streamed = { msgId, text };
-        bridge?.emitMsg({ phase: "update", msgId, role: "assistant", text });
+        bridge?.emitMsg({ phase, msgId, role: "assistant", text });
       }
       const images = imagesOf(message.content);
       if (images.length > 0) {
@@ -833,19 +853,27 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     }),
   );
 
-  // omp streams no update for a user message; it starts and ends it once the
-  // message enters the conversation: at once when idle, a steer at the next
-  // step boundary, a follow-up when its turn begins. Echo it then, so the
-  // phone confirms its optimistic send (matched by role + exact text) and
-  // shows prompts typed at the desk.
+  // A reply's last snapshot finishes its row, so the phone stops showing it as
+  // streaming; one that streamed no text (tool calls only) has no row. omp
+  // streams no update for a user message: it starts and ends it once the
+  // message enters the conversation (at once when idle, a steer at the next
+  // step boundary, a follow-up when its turn begins). Echo it then, so the
+  // phone confirms its send and shows prompts typed at the desk.
   pi.on(
     "message_end",
     guard((event: MessageEndEvent) => {
       const message = event.message;
+      if (message.role === "assistant") {
+        const msgId = feedIds.end("assistant", message.timestamp);
+        const text = textOf(message.content);
+        if (text !== "" || streamed?.msgId === msgId)
+          bridge?.emitMsg({ phase: "end", msgId, role: "assistant", text });
+        return;
+      }
       if (message.role !== "user") return;
       bridge?.emitMsg({
         phase: "end",
-        msgId: `user-${message.timestamp}`,
+        msgId: feedIds.end("user", message.timestamp),
         role: "user",
         text: textOf(message.content),
       });

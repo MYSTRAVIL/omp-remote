@@ -3,6 +3,7 @@ import type {
   CatalogRole,
   ControlErrorFrame,
   Frame,
+  InteractionFrame,
   InteractionPayload,
   InteractionResponse,
   JobRow,
@@ -38,6 +39,19 @@ export interface SessionBridgeOptions {
   scheduler?: ReconnectScheduler;
   /** Privacy-safe operational diagnostics. */
   diagnostic?: BridgeDiagnosticSink;
+  /**
+   * Frames sent on every (re)connect right after the hello, before the frames
+   * queued while the agent was unreachable: the session's recent transcript,
+   * which an agent that restarted (or dropped this connection) no longer
+   * holds, so it rebuilds it in order. Must not throw.
+   */
+  backfill?: () => UplinkFrame[];
+  /**
+   * Runs on every (re)connect once the hello, the backfill, the queued frames
+   * and the pending interactions are sent, to publish the session's current
+   * state (catalog, footer, jobs) the agent may have lost. Must not throw.
+   */
+  onConnected?: () => void;
 }
 
 /**
@@ -67,6 +81,8 @@ class TimerScheduler implements ReconnectScheduler {
 
 /** A pending interaction awaiting the client's reply. */
 interface InteractionWaiter {
+  /** The frame that asked, sent again on every reconnect until settled. */
+  frame: InteractionFrame;
   resolve: (response: InteractionResponse | undefined) => void;
   signal?: AbortSignal;
   onAbort: () => void;
@@ -87,6 +103,7 @@ export class SessionBridge {
     text: string,
     mode: "steer" | "followUp" | "aside",
     attachments?: string[],
+    clientId?: string,
   ) => void)[] = [];
   #interruptCbs: (() => void)[] = [];
   #serviceTierCbs: ((enabled: boolean) => void)[] = [];
@@ -162,7 +179,13 @@ export class SessionBridge {
       };
       if (this.#opts.role) hello.role = this.#opts.role;
       conn.send(hello);
+      for (const f of this.#opts.backfill?.() ?? []) conn.send(f);
       for (const f of this.#queue.splice(0)) conn.send(f);
+      // The agent forgets a session's questions when its connection drops;
+      // ask again whatever still waits on an answer.
+      for (const { frame } of this.#interactionWaiters.values())
+        conn.send(frame);
+      this.#opts.onConnected?.();
     } catch (err) {
       if (!(err instanceof IpcAuthError)) {
         this.#scheduleReconnect("connect-failed");
@@ -317,10 +340,12 @@ export class SessionBridge {
   emitAttention(reason: "idle" | "approval"): void {
     this.#send({ t: "attention", sessionId: this.#opts.meta.id, reason });
   }
-  /** A phone control reached omp but the operation itself failed. */
+  /** A phone control reached omp but the operation itself failed; a refused
+   *  prompt names its `clientId` so the phone marks that send. */
   emitControlFailed(
     action: ControlErrorFrame["action"],
     message: string,
+    clientId?: string,
   ): void {
     this.#send({
       t: "controlError",
@@ -328,6 +353,7 @@ export class SessionBridge {
       action,
       code: "control-failed",
       message,
+      ...(clientId === undefined ? {} : { clientId }),
     });
   }
   onPrompt(
@@ -335,6 +361,7 @@ export class SessionBridge {
       text: string,
       mode: "steer" | "followUp" | "aside",
       attachments?: string[],
+      clientId?: string,
     ) => void,
   ): void {
     this.#promptCbs.push(cb);
@@ -372,7 +399,8 @@ export class SessionBridge {
    *  types. */
   #dispatchControl(f: Frame): boolean {
     if (f.t === "prompt") {
-      for (const cb of this.#promptCbs) cb(f.text, f.mode, f.attachments);
+      for (const cb of this.#promptCbs)
+        cb(f.text, f.mode, f.attachments, f.clientId);
       return true;
     }
     if (f.t === "setModel") {
@@ -427,7 +455,8 @@ export class SessionBridge {
    * await the reply. Resolves the client's response, or `undefined` if the request is
    * aborted via `signal` before a reply arrives — in which case the client is told to
    * dismiss it (`interactionEnd`). First reply wins; a later reply for the same `id`
-   * finds no waiter and is ignored.
+   * finds no waiter and is ignored. Asked while the agent is unreachable, it is sent
+   * on the next connect, which asks every still-pending interaction again.
    */
   raiseInteraction(
     id: string,
@@ -442,14 +471,15 @@ export class SessionBridge {
       return promise;
     }
     const onAbort = () => this.#settleInteraction(id, undefined, true);
-    this.#interactionWaiters.set(id, { resolve, signal, onAbort });
-    signal?.addEventListener("abort", onAbort, { once: true });
-    this.#send({
+    const frame: InteractionFrame = {
       t: "interaction",
       sessionId: this.#opts.meta.id,
       id,
       payload,
-    });
+    };
+    this.#interactionWaiters.set(id, { frame, resolve, signal, onAbort });
+    signal?.addEventListener("abort", onAbort, { once: true });
+    this.#conn?.send(frame);
     return promise;
   }
 

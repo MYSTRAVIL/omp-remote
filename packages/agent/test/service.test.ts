@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+  AttentionFrame,
   ClientMessage,
   Frame,
   HistoryFrame,
@@ -1051,7 +1052,7 @@ test("the session list carries the live title so a fresh client paints it first"
   };
   expect(lists.at(-1)).toEqual(titled);
   // ...and a reconnecting client's backfill leads with it.
-  expect(svc.replay()[0]).toEqual(titled);
+  expect(svc.replay()[1]).toEqual(titled);
 
   // An empty title (omp has not named it, or a synthetic lifecycle state)
   // never blanks a known title, and an unchanged title is not re-broadcast.
@@ -1405,8 +1406,10 @@ test("a replay announces retained images deferred and never carries their chunks
 
   // The phone paints a placeholder and fetches the bytes only when it needs them.
   expect(svc.replay()).toEqual([
+    REPLAY_START,
     { t: "sessions", sessions: [meta] },
     { ...shot.init, deferred: true },
+    REPLAY_END,
   ]);
   registration.close();
 });
@@ -1549,6 +1552,7 @@ const ask: InteractionFrame = {
   t: "interaction",
   sessionId: meta.id,
   id: "q1",
+  at: 5,
   payload: { kind: "ask", questions: [{ question: "Deploy now?" }] },
 };
 
@@ -1571,11 +1575,19 @@ test("a replay re-asks pending interactions after the transcript until they sett
     t: "interaction",
     sessionId: meta.id,
     id: "q2",
+    at: 6,
     payload: { kind: "approval", tool: "bash", choices: ["allow", "deny"] },
   };
   const list: ClientMessage = { t: "sessions", sessions: [meta] };
   for (const frame of [said, ask, approval]) registration.emit(frame);
-  expect(svc.replay()).toEqual([list, said, ask, approval]);
+  expect(svc.replay()).toEqual([
+    REPLAY_START,
+    list,
+    said,
+    ask,
+    approval,
+    REPLAY_END,
+  ]);
 
   // Settled without the phone (answered at the desk): no longer asked.
   registration.emit({
@@ -1584,7 +1596,13 @@ test("a replay re-asks pending interactions after the transcript until they sett
     id: "q1",
     reason: "resolved",
   });
-  expect(svc.replay()).toEqual([list, said, approval]);
+  expect(svc.replay()).toEqual([
+    REPLAY_START,
+    list,
+    said,
+    approval,
+    REPLAY_END,
+  ]);
 
   // Answered from the phone: routed to the session, and not asked again even
   // though no interactionEnd follows.
@@ -1596,12 +1614,12 @@ test("a replay re-asks pending interactions after the transcript until they sett
   };
   svc.deliverDownlink(reply);
   expect(routed).toEqual([reply]);
-  expect(svc.replay()).toEqual([list, said]);
+  expect(svc.replay()).toEqual([REPLAY_START, list, said, REPLAY_END]);
 
   // A new question, then the session says bye: none of it is replayed.
   registration.emit(ask);
   registration.emit({ t: "bye", sessionId: meta.id });
-  expect(svc.replay()).toEqual([list]);
+  expect(svc.replay()).toEqual([REPLAY_START, list, REPLAY_END]);
   registration.close();
 });
 
@@ -1639,6 +1657,203 @@ test("a bridge that drops mid-question leaves nothing pending when its session r
   await gone.promise;
   unsubscribe();
   const again = await openFeed(svc, path);
-  expect(svc.replay()).toEqual([{ t: "sessions", sessions: [meta] }]);
+  expect(svc.replay()).toEqual([
+    REPLAY_START,
+    { t: "sessions", sessions: [meta] },
+    REPLAY_END,
+  ]);
   again.close();
+});
+
+/** The bracket every replay comes in. */
+const REPLAY_START: ClientMessage = { t: "replayStart" };
+const REPLAY_END: ClientMessage = { t: "replayEnd" };
+
+const idleWait: AttentionFrame = {
+  t: "attention",
+  sessionId: meta.id,
+  reason: "idle",
+};
+const approvalWait: AttentionFrame = { ...idleWait, reason: "approval" };
+function stateFrame(streaming: boolean): UplinkFrame {
+  return { t: "state", sessionId: meta.id, model: "m", streaming, title: "T" };
+}
+function said(role: string): UplinkFrame {
+  return {
+    t: "msg",
+    sessionId: meta.id,
+    phase: "end",
+    msgId: `${role}-1`,
+    role,
+    text: "words",
+    at: 1,
+  };
+}
+const toolStarted: UplinkFrame = {
+  t: "tool",
+  sessionId: meta.id,
+  phase: "start",
+  callId: "c1",
+  name: "bash",
+  status: "running",
+  preview: "",
+};
+
+test("a replay ends a session's backfill with its unsettled attention, until a frame settles it", () => {
+  const cases: [string, AttentionFrame, UplinkFrame[], boolean][] = [
+    ["idle, then a user message", idleWait, [said("user")], false],
+    ["idle, then back at work", idleWait, [stateFrame(true)], false],
+    ["idle, then a new question", idleWait, [ask], false],
+    ["idle, then bye", idleWait, [{ t: "bye", sessionId: meta.id }], false],
+    ["idle, then its own words", idleWait, [said("assistant")], true],
+    ["idle, then a tool", idleWait, [toolStarted], true],
+    ["idle, still idle", idleWait, [stateFrame(false)], true],
+    ["approval, then the tools move on", approvalWait, [toolStarted], false],
+    [
+      "approval, then the agent speaks",
+      approvalWait,
+      [said("assistant")],
+      false,
+    ],
+    ["approval, then a user message", approvalWait, [said("user")], false],
+    ["approval, still working", approvalWait, [stateFrame(true)], true],
+    [
+      "approval, stopped then working again",
+      approvalWait,
+      [stateFrame(false), stateFrame(true)],
+      false,
+    ],
+  ];
+  for (const [name, wait, after, kept] of cases) {
+    svc = new AgentService({ token: "tok", ipcPath: ipcAddr() });
+    const registration = svc.registerCollabSession(meta, () => {});
+    setSystemTime(1_000);
+    registration.emit(stateFrame(true));
+    registration.emit(wait);
+    for (const frame of after) registration.emit(frame);
+    const replayed = svc.replay();
+    const waits = replayed.filter((frame) => frame.t === "attention");
+    expect([name, waits]).toEqual([name, kept ? [{ ...wait, at: 1_000 }] : []]);
+    // It closes the session's backfill, after its transcript and questions.
+    if (kept) expect(replayed.at(-2)).toEqual({ ...wait, at: 1_000 });
+    registration.close();
+  }
+});
+
+test("each attention is stamped once with when its wait began, a newer one later even in the same millisecond", () => {
+  svc = new AgentService({ token: "tok", ipcPath: ipcAddr() });
+  const registration = svc.registerCollabSession(meta, () => {});
+  const relayed: ClientMessage[] = [];
+  const unsubscribe = svc.subscribe((frame) => relayed.push(frame));
+  setSystemTime(2_000);
+  registration.emit(idleWait);
+  registration.emit(approvalWait);
+  // One that carries its own time keeps it.
+  registration.emit({ ...idleWait, at: 42 });
+  expect(relayed.filter((frame) => frame.t === "attention")).toEqual([
+    { ...idleWait, at: 2_000 },
+    { ...approvalWait, at: 2_001 },
+    { ...idleWait, at: 42 },
+  ]);
+  // The newest replaces the rest.
+  expect(svc.replay().filter((frame) => frame.t === "attention")).toEqual([
+    { ...idleWait, at: 42 },
+  ]);
+  unsubscribe();
+  registration.close();
+});
+
+test("an interaction is stamped with when the host first saw it, and a re-sent one keeps that", () => {
+  svc = new AgentService({ token: "tok", ipcPath: ipcAddr() });
+  const registration = svc.registerCollabSession(meta, () => {});
+  const relayed: ClientMessage[] = [];
+  const unsubscribe = svc.subscribe((frame) => relayed.push(frame));
+  const { at: _, ...unstamped } = ask;
+  setSystemTime(3_000);
+  registration.emit(unstamped);
+  setSystemTime(9_000);
+  registration.emit(unstamped);
+  expect(relayed.filter((frame) => frame.t === "interaction")).toEqual([
+    { ...unstamped, at: 3_000 },
+    { ...unstamped, at: 3_000 },
+  ]);
+  expect(svc.replay()).toContainEqual({ ...unstamped, at: 3_000 });
+  unsubscribe();
+  registration.close();
+});
+
+test("an IPC feed bridge's attention reaches clients and the replay", async () => {
+  const path = ipcAddr();
+  svc = new AgentService({ token: "tok", ipcPath: path });
+  await svc.start();
+  const feed = await openFeed(svc, path);
+  const relayed = Promise.withResolvers<ClientMessage>();
+  const unsubscribe = svc.subscribe((frame) => {
+    if (frame.t === "attention") relayed.resolve(frame);
+  });
+  setSystemTime(4_000);
+  feed.send(idleWait);
+  expect(await relayed.promise).toEqual({ ...idleWait, at: 4_000 });
+  expect(svc.replay().at(-2)).toEqual({ ...idleWait, at: 4_000 });
+  unsubscribe();
+  feed.close();
+});
+
+test("the host names each phone prompt on the user message omp makes of it, lists the rest at replayEnd, and replays an overtaken reply below the steer", async () => {
+  const path = ipcAddr();
+  svc = new AgentService({ token: "tok", ipcPath: path });
+  await svc.start();
+  const registration = svc.registerCollabSession(meta, () => {});
+  const control = await connectIpc(path, "tok");
+  const ready = Promise.withResolvers<void>();
+  control.onFrame((frame) => {
+    if (frame.t === "promptControlReady") ready.resolve();
+  });
+  control.send({
+    t: "hello",
+    token: "tok",
+    role: "prompt-control",
+    session: meta,
+  });
+  await ready.promise;
+
+  const prompt = (text: string, clientId: string) =>
+    svc?.deliverDownlink({
+      t: "prompt",
+      sessionId: meta.id,
+      text,
+      mode: "steer",
+      clientId,
+    });
+  const said = (msgId: string, role: string, text: string): MsgFrame => ({
+    t: "msg",
+    sessionId: meta.id,
+    phase: role === "user" ? "end" : "update",
+    msgId,
+    role,
+    text,
+    at: 1,
+  });
+  prompt("go", "c1");
+  prompt("go", "c2");
+  registration.emit(said("a1", "assistant", "Reading"));
+  // omp takes the first "go" in: the oldest prompt with that text is named.
+  registration.emit(said("u1", "user", "go"));
+  // A re-sent copy of that message (a reconnect's snapshot) claims nothing more.
+  registration.emit(said("u1", "user", "go"));
+  // The reply streams on after the steer: the replay puts it below the steer.
+  registration.emit(said("a1", "assistant", "Reading. Going now."));
+  const replay = svc.replay("sync-7");
+  expect(
+    replay.flatMap((f) =>
+      f.t === "msg" ? [`${f.msgId}${f.clientId ? `:${f.clientId}` : ""}`] : [],
+    ),
+  ).toEqual(["u1:c1", "a1"]);
+  expect(replay.at(-1)).toEqual({
+    t: "replayEnd",
+    syncId: "sync-7",
+    queued: ["c2"],
+  });
+  control.close();
+  registration.close();
 });

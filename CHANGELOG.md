@@ -5,6 +5,29 @@ All notable changes to omp-remote are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **App badge.** The installed app's icon shows how many sessions wait on you.
+- **Notification detail.** Settings > Notifications chooses per device what a notification shows: Private (only that something needs you), Session (which session and why), or Preview (also the question or last reply, the default).
+- **Take photo / Choose existing.** The composer's attach button offers the camera and the photo library separately.
+
+### Changed
+
+- Attached photos are prepared on the phone before upload. JPEGs are re-encoded, which drops EXIF and GPS data. Images over 2576 px on the long edge (the current Claude input limit) are scaled down. Smaller PNG and WebP images, such as screenshots, are sent unchanged.
+- Tapping a notification for a session that has ended stays on the home view and says so, and a tap waits for the session list to sync before it opens anything.
+- The host now remembers when a session started waiting for your turn and replays it, so a phone that opens cold or reloads still colors that session as waiting. Sessions fed by the IPC bridge now forward "your turn" to the phone at all.
+- The session list shows only machines and projects with a session. A machine with none is left out (New session still lists every online machine), and when nothing is running the list says so once.
+- A headless omp run (`omp -p`, rpc) its host cannot reach is no longer listed as "Unreachable". The bridge now marks such sessions headless. An interactive session its host cannot reach is still listed as "Unreachable".
+
+### Fixed
+
+- Restarting the host service no longer leaves live sessions half-empty on the phone (#11). Whenever an omp session's bridge reconnects to the host, it re-sends what the host lost: the model catalog (the picker showed "No models available" until the model changed) and the job list, and for a session the IPC bridge feeds also the footer, any question still waiting for an answer and the recent transcript (up to 200 messages and tool cards), so a phone opened after the restart shows the earlier messages. A Collab session gets its transcript, footer and questions back from its room, as before. omp sessions pick this up once they load the updated bridge (restart them once).
+- Notifications without content ("This site has been updated in the background") no longer appear after a session is answered at the desk. Chrome shows its own notification when a push leaves none of the app's notifications showing, so clearing the last one now replaces it, silently, with one saying the session no longer waits. The phone also tells the machine when you have a session on screen, so the machine sends no clear for a notification already gone.
+- Tapping a notification opens its session even when the app reloads into a new deploy right after, which the tap's own navigation often triggers. The open session also stays open across that reload. A tap that brings a backgrounded app forward checks the connection first, so a session started while the app was in the background no longer reads as ended.
+- Steering a running session from the phone is reliable (#8). A steer or queued prompt waits at the bottom of the transcript until omp takes it in, then sits where omp took it in, so each answer appears under the prompt it answers, the same after a reload. A reply that keeps streaming after a steer moves below it. Each prompt carries an id the host names on the message omp makes of it, so a prompt that was taken in no longer stays "steering in…", and one that never reached the host (lost with a dropped link, refused, or still waiting when the session ended) shows "not delivered". Replies on a session the IPC bridge feeds now finish streaming, and two replies can no longer share a row; on a Collab session a reconnect no longer doubles or overwrites replies. The bridge part needs omp sessions to load the updated bridge (restart them once).
+- A pairing interrupted at the wrong moment no longer leaves phone commands failing silently for good (#6). Pairing now saves the phone as the one the machine serves right after it trusts it, before it reports success. An install that already diverged heals at start: the agent serves the newest paired phone, logs `uplink_phone_diverged`, and `omp-remote doctor` warns when `agent.phoneId` names another phone.
+- A phone the machine no longer serves (another phone was paired since) is told so instead of hearing nothing (#7). The machine answers the lines it cannot open with a clear notice to that phone, which names no key, session or content and is sent once per phone connection. The session list then shows "This phone is no longer paired with <machine>" with a Re-pair button until a sealed exchange with that machine succeeds again.
+
 ## [0.2.0] - 2026-09-26
 
 ### Fixed

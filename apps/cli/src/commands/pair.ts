@@ -1,5 +1,9 @@
 import { parseArgs } from "node:util";
-import { type PairingResult, performPairing } from "@omp-remote/agent/src/pair";
+import {
+  type PairingResult,
+  performPairing,
+  servedPhone,
+} from "@omp-remote/agent/src/pair";
 import {
   type Config,
   loadConfig,
@@ -52,18 +56,14 @@ export async function pairingPhoneUrl(
 
 /**
  * Whether this machine still has to pair a phone: it holds no machine token,
- * or `pairing.json` lacks the phone the agent serves (`agent.phoneId`, else
- * the first trusted one).
+ * or `pairing.json` trusts no phone for the agent to serve (the newest one,
+ * whatever `agent.phoneId` names; see `servedPhone`).
  */
 export async function needsPairing(cfg: AgentConfig): Promise<boolean> {
   if ((await readSecret(secretPaths.agentToken)) === undefined) return true;
   const store = new PairingStore(secretPaths.pairing);
   await store.load();
-  const phone =
-    cfg.agent.phoneId === undefined
-      ? store.peers()[0]
-      : store.peer(cfg.agent.phoneId);
-  return phone === undefined;
+  return servedPhone(store, cfg.agent.phoneId) === undefined;
 }
 
 export interface PairTarget {
@@ -77,13 +77,19 @@ export interface PairTarget {
    * for `run` and `pair` (same server that issued it); false for `join`.
    */
   renew: boolean;
+  /**
+   * Save the phone the pairing trusts as the one this machine serves; it runs
+   * before pairing reports success (see `PairingDeps.serve`).
+   */
+  serve: (phonePub: string) => Promise<void>;
 }
 
 /**
  * Pair a phone with this machine: register the pairing with the server, show
  * the code with a QR of the phone's `#pair=` link, wait for the phone's
  * claim, and show the SAS. On success the machine's new token is in
- * `agent-token` and the phone is trusted in `pairing.json`.
+ * `agent-token`, the phone is trusted in `pairing.json`, and `target.serve`
+ * has saved it as the phone served.
  */
 export async function pairPhone(
   target: PairTarget,
@@ -105,6 +111,7 @@ export async function pairPhone(
           ),
       }),
       renew: target.renew,
+      serve: target.serve,
       newCode: async () => {
         code = await newPairingCode();
         return code;
@@ -152,16 +159,18 @@ export async function pair(args: string[], deps: CliDeps): Promise<number> {
       "this machine runs no agent; `omp-remote join <url>` adds one",
     );
   const cfg = { ...loaded, agent };
-  const result = await pairPhone(
+  await pairPhone(
     {
       machineId: cfg.machineId,
       serverUrl: agentServerUrl(cfg),
       phoneUrl: await pairingPhoneUrl(cfg, deps),
       renew: true,
+      serve: async (phonePub) => {
+        await servePhone(cfg, phonePub);
+      },
     },
     deps,
   );
-  await servePhone(cfg, result.phonePub);
   deps.print(
     "Restart omp-remote so its agent serves the new phone: `omp-remote install` restarts the service, or restart `omp-remote run`.",
   );

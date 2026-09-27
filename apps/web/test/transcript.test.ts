@@ -578,3 +578,123 @@ test("a chunk heard twice, as fetch answers overlap a live transfer, leaves the 
     `data:image/png;base64,${toBase64(new Uint8Array([1, 2]))}`,
   );
 });
+
+/** A local echo of a sent prompt, as `AppStore.addPendingPrompt` adds it. */
+function echo(
+  state: TranscriptState,
+  text: string,
+  clientId?: string,
+): MessageEntry {
+  const entry: MessageEntry = {
+    kind: "message",
+    msgId: `pending-${state.entries.length}`,
+    role: "user",
+    text,
+    streaming: false,
+    pending: "steer",
+    ...(clientId === undefined ? {} : { clientId }),
+  };
+  state.entries.push(entry);
+  return entry;
+}
+const userEcho = (msgId: string, text: string, clientId?: string) =>
+  ({
+    ...msg("end", msgId, "user", text),
+    ...(clientId === undefined ? {} : { clientId }),
+  }) as UplinkFrame;
+const order = (s: TranscriptState) =>
+  s.entries.map((e) =>
+    e.kind === "tool"
+      ? e.callId
+      : `${e.msgId}${e.pending ? "?" : e.failed ? "!" : ""}`,
+  );
+
+test("a steer waits last until taken in, then sits where the host took it, so each answer lands under its own steer", () => {
+  const s = buildTranscript([msg("start", "a1", "assistant", "Working")]);
+  echo(s, "use tabs", "c1");
+  echo(s, "and add tests", "c2");
+  // The turn goes on: its tool card and more text land above both steers.
+  reduceTranscript(s, tool("start", "t1", "running", "x"));
+  reduceTranscript(s, msg("end", "a1", "assistant", "Working on it"));
+  expect(order(s)).toEqual(["a1", "t1", "pending-1?", "pending-2?"]);
+  // omp takes the first steer in and answers it before the second.
+  reduceTranscript(s, userEcho("u1", "use tabs", "c1"));
+  reduceTranscript(s, msg("start", "a2", "assistant", "Tabs it is"));
+  reduceTranscript(s, userEcho("u2", "and add tests", "c2"));
+  reduceTranscript(s, msg("start", "a3", "assistant", "Tests added"));
+  expect(order(s)).toEqual(["a1", "t1", "u1", "a2", "u2", "a3"]);
+  // The host's replay of the same session builds the same order.
+  const replay = buildTranscript([
+    msg("end", "a1", "assistant", "Working on it"),
+    tool("start", "t1", "running", "x"),
+    userEcho("u1", "use tabs", "c1"),
+    msg("start", "a2", "assistant", "Tabs it is"),
+    userEcho("u2", "and add tests", "c2"),
+    msg("start", "a3", "assistant", "Tests added"),
+  ]);
+  expect(order(replay)).toEqual(order(s));
+});
+
+test("a reply that streams on after a later user message moves below it; a re-sent or ended frame of it stays put", () => {
+  const s = buildTranscript([
+    msg("start", "a1", "assistant", "Reading"),
+    userEcho("u1", "stop and summarize"),
+  ]);
+  // A replay re-sending the reply's latest snapshot, or its end, moves nothing.
+  reduceTranscript(s, msg("update", "a1", "assistant", "Reading"));
+  expect(order(s)).toEqual(["a1", "u1"]);
+  // New text after the steer answers it: the reply moves below the steer.
+  reduceTranscript(s, msg("update", "a1", "assistant", "Reading. Summary:"));
+  expect(order(s)).toEqual(["u1", "a1"]);
+  reduceTranscript(s, msg("end", "a1", "assistant", "Reading. Summary: done"));
+  expect(order(s)).toEqual(["u1", "a1"]);
+  // A local echo still waiting is no later user message: nothing moves.
+  echo(s, "thanks");
+  reduceTranscript(s, msg("start", "a2", "assistant", "More"));
+  reduceTranscript(s, msg("update", "a2", "assistant", "More text"));
+  expect(order(s)).toEqual(["u1", "a1", "a2", "pending-2?"]);
+});
+
+test("an echo naming a clientId confirms only that prompt's copy; without one the text decides, whitespace aside", () => {
+  const s = emptyTranscript();
+  echo(s, "go", "mine");
+  // Another device sent the same words: its prompt is not this phone's.
+  reduceTranscript(s, userEcho("u1", "go", "theirs"));
+  expect(order(s)).toEqual(["u1", "pending-0?"]);
+  // The host names this phone's prompt even when omp's copy of the text differs.
+  reduceTranscript(s, userEcho("u2", "go now", "mine"));
+  expect(order(s)).toEqual(["u1", "u2"]);
+  // An older host names no prompt: the text decides, line endings and outer
+  // whitespace aside.
+  echo(s, "line one\nline two");
+  reduceTranscript(s, userEcho("u3", "line one\r\nline two  "));
+  expect(order(s)).toEqual(["u1", "u2", "u3"]);
+});
+
+test("a refused prompt, and one still waiting when the session ends, show as not delivered; a late echo still confirms one", () => {
+  const s = emptyTranscript();
+  echo(s, "first", "c1");
+  echo(s, "second", "c2");
+  reduceTranscript(s, {
+    t: "controlError",
+    sessionId: "s1",
+    action: "prompt",
+    code: "control-failed",
+    message: "The attached image never reached this machine.",
+    clientId: "c2",
+  });
+  expect(order(s)).toEqual([
+    "pending-1!",
+    "control-error:prompt",
+    "pending-0?",
+  ]);
+  reduceTranscript(s, { t: "bye", sessionId: "s1" });
+  expect(order(s)).toEqual([
+    "pending-1!",
+    "control-error:prompt",
+    "pending-0!",
+  ]);
+  // omp did take the first in after all: its message confirms the copy.
+  reduceTranscript(s, userEcho("u1", "first", "c1"));
+  expect(order(s)).toEqual(["pending-1!", "control-error:prompt", "u1"]);
+});

@@ -64,17 +64,18 @@ export class PairingStore {
   self(): Identity {
     return this.#require().identity;
   }
+  /** Every trusted phone, oldest first: the order they were last trusted in. */
   peers(): Peer[] {
     return [...this.#require().peers];
   }
   peer(id: string): Peer | undefined {
     return this.#require().peers.find((p) => p.id === id);
   }
+  /** Trust `peer` as the newest phone: one trusted before (a phone pairing
+   *  again) moves to the end of `peers()`, its key replaced. */
   async trust(peer: Peer): Promise<void> {
     const data = this.#require();
-    const idx = data.peers.findIndex((p) => p.id === peer.id);
-    if (idx >= 0) data.peers[idx] = peer;
-    else data.peers.push(peer);
+    data.peers = [...data.peers.filter((p) => p.id !== peer.id), peer];
     await this.#persist();
   }
 

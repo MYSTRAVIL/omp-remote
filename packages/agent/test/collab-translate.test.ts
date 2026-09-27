@@ -68,34 +68,46 @@ test("msg frames carry the Collab source time, one per message across its phases
   }
 });
 
-test("every phase of a streamed assistant message keeps its first emission's time", () => {
-  const translator = new CollabTranslator("s");
+test("a streamed reply keys its row by its timestamp, the same row its snapshot entry lands on after a reconnect", () => {
+  const assistant = (text: string, timestamp: number) => ({
+    role: "assistant",
+    content: [{ type: "text", text }],
+    timestamp,
+  });
+  const live = new CollabTranslator("s");
   const event = (type: string, text: string, timestamp: number) =>
-    translator.host({
+    live.host({
       t: "event",
-      event: {
-        type,
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text }],
-          timestamp,
-        },
-      },
+      event: { type, message: assistant(text, timestamp) },
     });
   const frames = msgs([
+    // omp can send an update before its start; every event shares the time.
+    ...event("message_update", "Hi", 1_000),
     ...event("message_start", "Hi", 1_000),
-    ...event("message_update", "Hi there", 2_000),
-    ...event("message_end", "Hi there!", 3_000),
+    ...event("message_end", "Hi there", 1_000),
+    ...event("message_start", "Next", 4_000),
   ]);
-  expect(frames.map((m) => [m.phase, m.at])).toEqual([
-    ["start", 1_000],
-    ["update", 1_000],
-    ["end", 1_000],
+  expect(frames.map((m) => [m.phase, m.msgId, m.at])).toEqual([
+    ["start", "assistant-1000", 1_000],
+    ["update", "assistant-1000", 1_000],
+    ["end", "assistant-1000", 1_000],
+    ["start", "assistant-4000", 4_000],
   ]);
-  expect(new Set(frames.map((m) => m.msgId)).size).toBe(1);
-
-  // The next message is a new stream with its own time.
-  expect(msgs(event("message_start", "Next", 4_000))[0]?.at).toBe(4_000);
+  // A restarted translator replays the history as a snapshot: the reply lands
+  // on the row it streamed into, not a second one.
+  const reconnected = new CollabTranslator("s");
+  const snapshot = msgs(
+    reconnected.host({
+      t: "snapshot-chunk",
+      final: true,
+      entries: [
+        { type: "message", id: "e1", message: assistant("Hi there", 1_000) },
+      ],
+    }),
+  );
+  expect(snapshot.map((m) => [m.phase, m.msgId, m.text])).toEqual([
+    ["end", "assistant-1000", "Hi there"],
+  ]);
 });
 
 test("the injected prompt appears exactly once, as the user's message", () => {
