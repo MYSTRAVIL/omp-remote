@@ -93,6 +93,11 @@ export interface PhoneClientOptions {
    * Absent, machines are never told.
    */
   notifyAwaySec?: (machineId: string) => number;
+  /**
+   * Called with a machine's id each time its channel becomes ready on a
+   * socket (see {@link PhoneClient.channelReady}), after its sync is sent.
+   */
+  onChannelReady?: (machineId: string) => void;
 }
 
 /**
@@ -224,6 +229,7 @@ export class PhoneClient {
   readonly #notifyAwaySec: ((machineId: string) => number) | undefined;
   readonly #onRelayState: ((state: RelayState) => void) | undefined;
   readonly #onSignedOut: ((reason: SignOutReason) => void) | undefined;
+  readonly #onChannelReady: ((machineId: string) => void) | undefined;
   /** The state `onRelayState` last heard, so each change is reported once. */
   #reportedRelay: RelayState = "offline";
   #socket: ClientSocket | undefined;
@@ -273,6 +279,7 @@ export class PhoneClient {
     this.#outbound = new BoundedQueue(opts.maxQueue ?? DEFAULT_MAX_QUEUE);
     this.#onRelayState = opts.onRelayState;
     this.#onSignedOut = opts.onSignedOut;
+    this.#onChannelReady = opts.onChannelReady;
   }
 
   start(): void {
@@ -308,6 +315,7 @@ export class PhoneClient {
         channel.sendFrame({ t: "sync", id });
         // The agent keeps where the user is told; tell it on every connect.
         this.#sendNotifyPolicy(machine.machineId, channel);
+        this.#onChannelReady?.(machine.machineId);
       });
       this.#sinks.set(machine.machineId, sink);
       this.#channels.set(machine.machineId, channel);
@@ -321,13 +329,21 @@ export class PhoneClient {
   }
 
   /**
+   * A machine's channel is ready on this socket: its agent acked it, so a
+   * frame sent now is sealed to that agent rather than held until the next ack.
+   */
+  channelReady(machineId: string): boolean {
+    return this.#connected && this.#synced.has(machineId);
+  }
+
+  /**
    * Tell a machine its away time again, after it changed: now when its
    * channel is ready on this socket, else on its next ready, as every
    * connect does.
    */
   sendNotifyPolicy(machineId: string): void {
     const channel = this.#channels.get(machineId);
-    if (channel && this.#connected && this.#synced.has(machineId))
+    if (channel && this.channelReady(machineId))
       this.#sendNotifyPolicy(machineId, channel);
   }
 

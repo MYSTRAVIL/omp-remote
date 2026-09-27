@@ -187,7 +187,7 @@ test("a missing config is one FAIL line", async () => {
   expect(lines).toEqual(["FAIL config: no config at x; run `omp-remote init`"]);
 });
 
-test("a config naming another phone than the newest paired one warns which phone the agent serves, and doctor still passes", async () => {
+test("a config naming a phone the store does not trust warns that the newest paired phone is served, and doctor still passes", async () => {
   const { cfg } = await healthyStack();
   const pairing = new PairingStore(secretPaths.pairing);
   await pairing.load();
@@ -195,21 +195,38 @@ test("a config naming another phone than the newest paired one warns which phone
     id: "phone-2",
     publicKey: (await newIdentity()).publicKey,
   });
-  // One paired before the newest, and one the store does not trust at all.
-  for (const phoneId of ["phone-1", "phone-gone"]) {
-    const { code, lines } = await runDoctor(
-      Config.parse({ ...cfg, agent: { ...cfg.agent, phoneId } }),
-    );
-    expect(code).toBe(0);
-    const warning = lines.find((l) => l.startsWith("WARN paired phone"));
-    expect(warning).toContain(
-      "the agent serves the newest paired phone (phone-2)",
-    );
-    expect(warning).toEndWith("omp-remote pair");
-  }
-  // Naming the newest one is no warning.
-  const { lines } = await runDoctor(
+  const { code, lines } = await runDoctor(
+    Config.parse({ ...cfg, agent: { ...cfg.agent, phoneId: "phone-gone" } }),
+  );
+  expect(code).toBe(0);
+  const warning = lines.find((l) => l.startsWith("WARN paired phone"));
+  expect(warning).toContain(
+    "the agent serves the newest paired phone (phone-2)",
+  );
+  expect(warning).toEndWith("omp-remote pair");
+});
+
+// #14: the agent serves a trusted `agent.phoneId` over a newer pairing, so
+// advising to switch to the newest one would break a working phone.
+test("a config naming a trusted phone paired before the newest one passes with a note, not a warning", async () => {
+  const { cfg } = await healthyStack();
+  const pairing = new PairingStore(secretPaths.pairing);
+  await pairing.load();
+  await pairing.trust({
+    id: "phone-2",
+    publicKey: (await newIdentity()).publicKey,
+  });
+  const { code, lines } = await runDoctor(
+    Config.parse({ ...cfg, agent: { ...cfg.agent, phoneId: "phone-1" } }),
+  );
+  expect(code).toBe(0);
+  expect(lines.some((l) => l.startsWith("WARN"))).toBe(false);
+  expect(lines).toContain(
+    "ok   paired phone: the agent serves agent.phoneId (phone-1); a phone paired after it is not served",
+  );
+  // Naming the newest one is a plain pass.
+  const newest = await runDoctor(
     Config.parse({ ...cfg, agent: { ...cfg.agent, phoneId: "phone-2" } }),
   );
-  expect(lines).toContain("ok   paired phone");
+  expect(newest.lines).toContain("ok   paired phone");
 });

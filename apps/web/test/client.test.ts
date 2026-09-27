@@ -5,10 +5,12 @@ import {
   newIdentity,
   serverSessionKeys,
 } from "@omp-remote/crypto";
-import type { SessionMeta } from "@omp-remote/protocol";
+import type { SealedFrame, SessionMeta } from "@omp-remote/protocol";
 import { type ClientSocket, PhoneClient } from "../src/core/client";
+import { DismissedNotices } from "../src/core/dismissed-notices";
 import { AppStore } from "../src/core/store";
 import { FakeAgent } from "./fixtures/fake-agent";
+import { fakeCaches } from "./fixtures/fake-push";
 
 const meta: SessionMeta = {
   id: "s1",
@@ -251,6 +253,66 @@ test("a new away time goes to its machine at once when its channel is ready, els
     { t: "notifyPolicy", awaySec: 60 },
     { t: "notifyPolicy", awaySec: 0 },
   ]);
+});
+
+test("the notifications the user dismissed are told to each machine once its channel is ready, once each", async () => {
+  const one = await pair();
+  const two = await pair();
+  const storage = fakeCaches();
+  // The worker records each dismissal; the page reports them.
+  const worker = new DismissedNotices(storage.caches);
+  await worker.record({ machineId: "m1", sessionId: "s1" });
+  await worker.record({ machineId: "m1", sessionId: "s2" });
+  await worker.record({ machineId: "m2", sessionId: "s3" });
+  const page = new DismissedNotices(storage.caches);
+  const sock = new FakeSocket();
+  let reported = Promise.resolve();
+  const client: PhoneClient = new PhoneClient(
+    () => sock,
+    [
+      { machineId: "m1", keys: one.phone },
+      { machineId: "m2", keys: two.phone },
+    ],
+    new AppStore(),
+    {
+      onChannelReady: () => {
+        reported = page.report(client);
+      },
+    },
+  );
+  client.start();
+  sock.fireOpen();
+  // On startup no agent has answered yet: nothing is told, nothing forgotten.
+  await page.report(client);
+
+  const m1 = new FakeAgent(one.agent, "m1");
+  m1.connect(sock);
+  m1.relay();
+  await reported;
+  m1.relay();
+  const toldM1: SealedFrame[] = [
+    { t: "sync", id: expect.any(String) },
+    { t: "noticeSeen", sessionId: "s1" },
+    { t: "noticeSeen", sessionId: "s2" },
+  ];
+  expect(m1.frames).toEqual(toldM1);
+
+  // Reported again (the page back on screen, the worker's message): each
+  // dismissal was told once and forgotten; m2's still waits for its channel.
+  await page.report(client);
+  m1.relay();
+  expect(m1.frames).toEqual(toldM1);
+
+  const m2 = new FakeAgent(two.agent, "m2");
+  m2.connect(sock);
+  m2.relay();
+  await reported;
+  m2.relay();
+  expect(m2.frames).toEqual([
+    { t: "sync", id: expect.any(String) },
+    { t: "noticeSeen", sessionId: "s3" },
+  ]);
+  expect(m1.frames).toEqual(toldM1);
 });
 
 test("a historyRequest goes sealed to its machine, and the sealed history answer reaches store subscribers", async () => {

@@ -5,6 +5,17 @@ All notable changes to omp-remote are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A session's notification now simply disappears once the session is answered at the desk, as a native app's would. Chrome shows its own "This site has been updated in the background" notification after too many pushes that leave nothing showing, so after five such removals in 24 hours the phone falls back to leaving one that says the session no longer waits. Removals while another notification is showing or the app is open don't count toward the five.
+
+### Fixed
+
+- A notification reading only "omp-remote / A session needs your attention" no longer appears after you swiped a session's notification away and the session was answered at the desk. A push that should show nothing still has to show a notification for a moment, and on Android that one could stay. It now says the session no longer waits, and a push that arrives while the app is open shows that session's own notification. Swiping a session's notification away now tells its machine (the next time the app is open and connected), so the machine sends no clear for it.
+- A machine whose config names a paired phone serves that phone again, even when another phone was paired after it (#14). Since 0.3.0 the machine always served the newest paired phone, so a phone that kept an earlier pairing got "no longer paired" and its commands failed. The newest paired phone is served only when `agent.phoneId` is unset or names a phone that is no longer paired, which the agent logs and `omp-remote doctor` warns about. For a named phone paired before the newest, `doctor` shows a note and no longer tells you to switch to the newest. If your phone says it is no longer paired after updating, pair it again with `omp-remote pair`.
+- A session resumed from the phone ("Continue") no longer disappears from the phone's list when the old omp process shuts down after the resumed one has started (#13). The old process's goodbye removed the session the new one had just registered, so its transcript was gone from the phone and interrupts and model changes failed until the session restarted. Only the session's current bridge can now end it, and a question the old process asked is no longer shown again.
+- The model picker stays filled after the phone reconnects to a long session (#14). The host keeps the last 1000 messages and tool cards of a session to send a reconnecting phone, and past that it could drop the session's model catalog, footer and job list instead of an old message. Those are now always kept, and the limit counts only messages and tool cards.
+
 ## [0.3.0] - 2026-09-27
 
 ### Added

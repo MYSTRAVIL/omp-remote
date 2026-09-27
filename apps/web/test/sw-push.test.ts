@@ -5,8 +5,21 @@ import {
   notifyKey,
   serverSessionKeys,
 } from "@omp-remote/crypto";
-import { type NotifyNotice, sealNotice } from "@omp-remote/protocol";
+import {
+  type NotifyNotice,
+  type SealedFrame,
+  sealNotice,
+} from "@omp-remote/protocol";
 import type { BadgeApi } from "../src/core/app-badge";
+import {
+  COSTLY_REMOVALS_PER_DAY,
+  CostlyRemovals,
+} from "../src/core/costly-removals";
+import {
+  DISMISSED_NOTICES_MAX,
+  DismissedNotices,
+  type SeenReceivers,
+} from "../src/core/dismissed-notices";
 import {
   PREFS_CACHE,
   readNotifyDetail,
@@ -23,15 +36,16 @@ import {
   type ClientsLike,
   type NotificationShower,
   type NotificationSpec,
-  type OpenSessionMessage,
   QUIET_TAG,
   SETTLED_BODY,
   type WindowClientLike,
+  type WorkerMessage,
   closeSettled,
   handlePush,
   openFromNotification,
   openSessionTarget,
   openSessionUrl,
+  reportDismissed,
 } from "../src/core/sw-push";
 import { fakeCaches } from "./fixtures/fake-push";
 
@@ -105,7 +119,7 @@ function fakeClients(
 
 /** A window of the app that records what the worker does to it. */
 function recordingWindow() {
-  const seen: { focused: number; messages: OpenSessionMessage[] } = {
+  const seen: { focused: number; messages: WorkerMessage[] } = {
     focused: 0,
     messages: [],
   };
@@ -149,25 +163,60 @@ const GENERIC = {
   },
   closed: false,
 };
-/** A push that shows nothing: shown silently under the quiet tag, and closed. */
-const QUIETED = {
-  title: ATTENTION_TITLE,
-  options: { body: ATTENTION_BODY, tag: QUIET_TAG, silent: true },
-  closed: true,
-};
+/**
+ * A push that shows nothing: shown silently under the quiet tag, and closed.
+ * If the close loses the race with the browser, what is left says only what
+ * is true: its session's notification, or that nothing waits.
+ */
+function quieted(
+  title: string,
+  body: string,
+  data?: { machineId: string; sessionId: string },
+) {
+  return {
+    title,
+    options: { body, tag: QUIET_TAG, silent: true, ...ICONS, data },
+    closed: true,
+  };
+}
+/** A quiet push this device can't open: it names no session, so nothing waits. */
+const QUIETED_UNNAMED = quieted(ATTENTION_TITLE, SETTLED_BODY);
+
+/** A day, as the costly removals count it. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** What a worker needs only for clear notices, for pushes that carry none. */
+function noClears() {
+  return {
+    removals: new CostlyRemovals(fakeCaches().caches),
+    now: () => 0,
+  };
+}
+
+/** Count `n` costly removals at `now`, as that many clears would have. */
+async function spendRemovals(
+  removals: CostlyRemovals,
+  now: number,
+  n: number,
+): Promise<void> {
+  for (let i = 0; i < n; i++) await removals.remove(now, async () => true);
+}
+
+/** How a test sets up its paired worker. */
+interface WorkerOpts {
+  quietWhileOpen?: boolean;
+  notifyDetail?: "private" | "session" | "preview";
+  badge?: BadgeApi;
+  /** Wrap the worker's costly-removal count, as `landingTogether` does. */
+  ledger?: (removals: CostlyRemovals) => Pick<CostlyRemovals, "remove">;
+}
 
 /**
  * Machine m1 paired with this phone as the agent and the page each hold it:
  * the agent seals notices with `notifyKey(tx)`; the page saved
  * `notifyKey(rx)` for the worker, with the name it shows ("Laptop").
  */
-async function pairedWorker(
-  opts: {
-    quietWhileOpen?: boolean;
-    notifyDetail?: "private" | "session" | "preview";
-    badge?: BadgeApi;
-  } = {},
-) {
+async function pairedWorker(opts: WorkerOpts = {}) {
   const phone = await newIdentity();
   const host = await newIdentity();
   const phoneKeys = await clientSessionKeys(phone, host.publicKey);
@@ -182,6 +231,11 @@ async function pairedWorker(
     await saveNotifyDetail(storage.caches, opts.notifyDetail);
   }
   const { registration, shown } = fakeRegistration();
+  const dismissed = new DismissedNotices(storage.caches);
+  const removals = new CostlyRemovals(storage.caches);
+  const ledger = opts.ledger?.(removals) ?? removals;
+  /** The worker's clock; a test moves it on by setting `now`. */
+  const clock = { now: 1_000 * DAY_MS };
   const push = (
     notice: NotifyNotice,
     windows: readonly { visible: boolean }[] = [],
@@ -194,12 +248,24 @@ async function pairedWorker(
           quietWhileOpen: async () => opts.quietWhileOpen ?? true,
           notifyKeys: () => readNotifyKeys(storage.caches),
           notifyDetail: () => readNotifyDetail(storage.caches),
+          forgetDismissed: (target) => dismissed.forget(target),
+          removals: ledger,
+          now: () => clock.now,
           badge: opts.badge,
         },
         JSON.stringify(envelope),
       ),
     );
-  return { push, registration, shown, agentKey, storage };
+  return {
+    push,
+    registration,
+    shown,
+    agentKey,
+    storage,
+    dismissed,
+    removals,
+    clock,
+  };
 }
 
 test("an attention notice shows its session's notification: named after it, where it runs and what it waits for", async () => {
@@ -359,7 +425,7 @@ test("unreadable detail pref falls back to preview", async () => {
   expect(options.body).toContain("Which branch?");
 });
 
-test("with quiet on, an attention notice while a window is on screen is shown silently and closed at once", async () => {
+test("with quiet on, an attention notice while a window is on screen is shown silently with its session's content and closed at once", async () => {
   const { push, shown } = await pairedWorker();
   await push(
     {
@@ -373,7 +439,14 @@ test("with quiet on, an attention notice while a window is on screen is shown si
     // A page the worker doesn't control yet counts too (see fakeClients).
     [{ visible: false }, { visible: true }],
   );
-  expect(shown).toEqual([QUIETED]);
+  // Left showing by a close that lost its race, it reads as the session's
+  // own notification, and a tap on it opens the session.
+  expect(shown).toEqual([
+    quieted("T", "Laptop · p\nWaiting for you", {
+      machineId: "m1",
+      sessionId: "s1",
+    }),
+  ]);
 });
 
 test("a clear notice closes only its session's notification, and still shows and closes a silent one", async () => {
@@ -398,6 +471,8 @@ test("a clear notice closes only its session's notification, and still shows and
         quietWhileOpen: async () => true,
         notifyKeys: async () => new Map(),
         notifyDetail: () => readNotifyDetail(fakeCaches().caches),
+        forgetDismissed: async () => undefined,
+        ...noClears(),
       },
       undefined,
     );
@@ -408,8 +483,22 @@ test("a clear notice closes only its session's notification, and still shows and
       ATTENTION_TAG,
     ]);
     // Closing one is not showing one: every push shows its own, even with a
-    // window of the app on screen, or WebKit drops the subscription.
-    expect(shown.at(-1)).toEqual(QUIETED);
+    // window of the app on screen, or WebKit drops the subscription. It says
+    // the session no longer waits.
+    expect(shown.at(-1)).toEqual(
+      quieted("s1", SETTLED_BODY, { machineId: "m1", sessionId: "s1" }),
+    );
+  }
+});
+
+test("a clear finding its notification already gone never says a session waits", async () => {
+  for (const windows of [[], [{ visible: true }]]) {
+    const { push, shown } = await pairedWorker();
+    // The user swiped the notification away before the session was answered.
+    await push({ kind: "clear", sessionId: "s1" }, windows);
+    expect(shown).toEqual([
+      quieted("Laptop", SETTLED_BODY, { machineId: "m1", sessionId: "s1" }),
+    ]);
   }
 });
 
@@ -445,6 +534,8 @@ test("a push this device can't open raises the generic notification", async () =
         quietWhileOpen: async () => true,
         notifyKeys: () => readNotifyKeys(storage.caches),
         notifyDetail: () => readNotifyDetail(storage.caches),
+        forgetDismissed: async () => undefined,
+        ...noClears(),
       },
       payload,
     );
@@ -471,6 +562,8 @@ test("a failed window lookup still raises the generic notification", async () =>
       quietWhileOpen: async () => true,
       notifyKeys: async () => new Map(),
       notifyDetail: () => readNotifyDetail(fakeCaches().caches),
+      forgetDismissed: async () => undefined,
+      ...noClears(),
     },
     undefined,
   );
@@ -487,6 +580,8 @@ test("with quiet on, a push while a window is on screen is shown silently and cl
     quietWhileOpen: async () => true,
     notifyKeys: async () => new Map(),
     notifyDetail: () => readNotifyDetail(fakeCaches().caches),
+    forgetDismissed: async () => undefined,
+    ...noClears(),
   });
   // An attention notification from before the app came on screen.
   await handlePush(deps([]), undefined);
@@ -499,7 +594,7 @@ test("with quiet on, a push while a window is on screen is shown silently and cl
   // Every push shows a notification, so no browser drops the subscription for
   // pushes that show nothing: this one silently, closed at once. No attention
   // notification is added, and the earlier one stays.
-  expect(shown).toEqual([GENERIC, QUIETED]);
+  expect(shown).toEqual([GENERIC, QUIETED_UNNAMED]);
 });
 
 test("with quiet off, a push while the app is on screen raises its notification", async () => {
@@ -511,6 +606,8 @@ test("with quiet off, a push while the app is on screen raises its notification"
       quietWhileOpen: async () => false,
       notifyKeys: async () => new Map(),
       notifyDetail: () => readNotifyDetail(fakeCaches().caches),
+      forgetDismissed: async () => undefined,
+      ...noClears(),
     },
     undefined,
   );
@@ -543,10 +640,12 @@ test("a device that never saved the quiet choice, or can't read it, has quiet on
         quietWhileOpen: () => readQuietWhileOpen(storage.caches),
         notifyKeys: () => readNotifyKeys(storage.caches),
         notifyDetail: () => readNotifyDetail(storage.caches),
+        forgetDismissed: async () => undefined,
+        ...noClears(),
       },
       undefined,
     );
-    expect(shown).toEqual([QUIETED]);
+    expect(shown).toEqual([QUIETED_UNNAMED]);
   }
 });
 
@@ -664,6 +763,8 @@ test("each session notification shown or closed sets the app badge to the sessio
       quietWhileOpen: async () => true,
       notifyKeys: async () => new Map(),
       notifyDetail: async () => "preview",
+      forgetDismissed: async () => undefined,
+      ...noClears(),
       badge,
     },
     undefined,
@@ -694,12 +795,12 @@ test("a worker whose badge is refused still shows and closes notifications", asy
   expect(shown[0]?.closed).toBe(true);
 });
 
-test("a clear for the last notification showing says its session no longer waits, so the browser never shows its own contentless one", async () => {
-  const { badge, set } = recordingBadge();
-  const { push, registration, shown } = await pairedWorker({ badge });
-  const open = () => shown.filter(({ closed }) => !closed);
+/** A worker with a question waiting per session, and what it shows. */
+async function questionWorker(opts: WorkerOpts = {}) {
+  const worker = await pairedWorker(opts);
+  const open = () => worker.shown.filter(({ closed }) => !closed);
   const attention = (sessionId: string) =>
-    push({
+    worker.push({
       kind: "attention",
       sessionId,
       reason: "question",
@@ -707,9 +808,44 @@ test("a clear for the last notification showing says its session no longer waits
       project: "omp-remote",
       detail: "Which branch?",
     });
+  const clear = (
+    sessionId: string,
+    windows: readonly { visible: boolean }[] = [],
+  ) => worker.push({ kind: "clear", sessionId }, windows);
+  return { ...worker, open, attention, clear };
+}
+
+test("a clear closes its notification outright, and one leaving another waiting or a window on screen never counts against the day's cap", async () => {
+  const { open, attention, clear, shown } = await questionWorker();
+  // Twice the cap of closes the browser charges nothing for.
+  for (let i = 0; i < COSTLY_REMOVALS_PER_DAY; i++) {
+    await attention("s1");
+    await attention("s2");
+    await clear("s1"); // s2 still waits
+    expect(open().map(({ options }) => options.tag)).toEqual(["session:m1:s2"]);
+    await clear("s2", [{ visible: true }]); // the app is on screen
+    expect(open()).toEqual([]);
+    expect(shown.at(-1)).toEqual(
+      quieted("Fix s2", SETTLED_BODY, { machineId: "m1", sessionId: "s2" }),
+    );
+  }
+  // Closes that leave none showing with no window on screen: up to the cap
+  // they close outright too, with nothing left saying the session settled.
+  for (let i = 0; i < COSTLY_REMOVALS_PER_DAY; i++) {
+    await attention("s1");
+    await clear("s1");
+    expect(open()).toEqual([]);
+  }
+});
+
+test("past the day's cap, a clear for the last notification showing says its session no longer waits, so the browser never shows its own contentless one", async () => {
+  const { badge, set } = recordingBadge();
+  const { open, attention, clear, registration, removals, clock } =
+    await questionWorker({ badge });
+  await spendRemovals(removals, clock.now, COSTLY_REMOVALS_PER_DAY);
   await attention("s1");
   // No window of the app on screen: closing it would leave none showing.
-  await push({ kind: "clear", sessionId: "s1" });
+  await clear("s1");
   expect(open()).toEqual([
     {
       title: "Fix s1",
@@ -728,15 +864,266 @@ test("a clear for the last notification showing says its session no longer waits
   await attention("s2");
   expect(open().map(({ options }) => options.tag)).toEqual(["session:m1:s2"]);
   // With a window of the app on screen, the browser needs none showing.
-  await push({ kind: "clear", sessionId: "s2" }, [{ visible: true }]);
+  await clear("s2", [{ visible: true }]);
   expect(open()).toEqual([]);
   // A session that no longer waits counts for nothing on the badge.
   expect(set).toEqual([1, 0, 1, 0]);
 
   // The page on screen closes one left from before.
   await attention("s3");
-  await push({ kind: "clear", sessionId: "s3" });
+  await clear("s3");
   expect(open()).toHaveLength(1);
   await closeSettled(registration);
   expect(open()).toEqual([]);
+
+  // A settled notification of another session (one left while s4's attention
+  // push landed) doesn't spare a clear its replacement: the next attention
+  // push or the page may close it before the browser counts what shows.
+  await attention("s4");
+  await registration.showNotification("Fix s9", {
+    body: SETTLED_BODY,
+    tag: "session:m1:s9",
+    silent: true,
+    data: { machineId: "m1", sessionId: "s9", settled: true },
+  });
+  await clear("s4");
+  expect(open().map(({ options }) => options.data)).toEqual([
+    { machineId: "m1", sessionId: "s9", settled: true },
+    { machineId: "m1", sessionId: "s4", settled: true },
+  ]);
+});
+
+test("a costly clear counts for a day, then no longer", async () => {
+  const { open, attention, clear, removals, clock } = await questionWorker();
+  const start = clock.now;
+  await spendRemovals(removals, start, COSTLY_REMOVALS_PER_DAY);
+  clock.now = start + DAY_MS - 1;
+  await attention("s1");
+  await clear("s1");
+  expect(open().map(({ options }) => options.data)).toEqual([
+    { machineId: "m1", sessionId: "s1", settled: true },
+  ]);
+  clock.now = start + DAY_MS;
+  await attention("s2");
+  await clear("s2");
+  expect(open()).toEqual([]);
+});
+
+test("a clear finding its notification gone counts against the cap when nothing else shows and no window is on screen", async () => {
+  const { open, attention, clear } = await questionWorker();
+  for (let i = 0; i < COSTLY_REMOVALS_PER_DAY; i++)
+    await clear("gone", [{ visible: true }]);
+  for (let i = 0; i < COSTLY_REMOVALS_PER_DAY - 1; i++) await clear("gone");
+  await attention("s1");
+  await clear("s1");
+  expect(open()).toEqual([]);
+  await attention("s2");
+  await clear("s2");
+  expect(open().map(({ options }) => options.data)).toEqual([
+    { machineId: "m1", sessionId: "s2", settled: true },
+  ]);
+});
+
+/**
+ * A count that holds each group of clears (`sizes`, in the order they reach
+ * it) until the whole group has, then lets it on at once, as clears landing
+ * together would.
+ */
+function landingTogether(
+  removals: CostlyRemovals,
+  sizes: readonly number[],
+): Pick<CostlyRemovals, "remove"> {
+  const groups = sizes.map((size) => ({
+    size,
+    arrived: Promise.withResolvers<void>(),
+  }));
+  let calls = 0;
+  return {
+    async remove(now, removal) {
+      const index = calls;
+      calls += 1;
+      let first = 0;
+      for (const group of groups) {
+        if (index < first + group.size) {
+          if (index === first + group.size - 1) group.arrived.resolve();
+          await group.arrived.promise;
+          break;
+        }
+        first += group.size;
+      }
+      return removals.remove(now, removal);
+    },
+  };
+}
+
+test("clears landing together each count, and never both close on the other's notification", async () => {
+  const { open, attention, clear } = await questionWorker({
+    ledger: (removals) =>
+      landingTogether(removals, [COSTLY_REMOVALS_PER_DAY - 2, 2]),
+  });
+  await Promise.all(
+    Array.from({ length: COSTLY_REMOVALS_PER_DAY - 2 }, () => clear("gone")),
+  );
+  await attention("s1");
+  await attention("s2");
+  // One closes while the other still shows, for free; the other is the
+  // last, and counts.
+  await Promise.all([clear("s1"), clear("s2")]);
+  expect(open()).toEqual([]);
+  await attention("s3");
+  await clear("s3"); // the cap's last
+  expect(open()).toEqual([]);
+  await attention("s4");
+  await clear("s4");
+  expect(open().map(({ options }) => options.data)).toEqual([
+    { machineId: "m1", sessionId: "s4", settled: true },
+  ]);
+});
+
+/** Every machine's channel ready (or those `ready` names), recording the frames each is sent. */
+function recordingMachines(ready: (machineId: string) => boolean = () => true) {
+  const sent: { machineId: string; frame: SealedFrame }[] = [];
+  const machines: SeenReceivers = {
+    channelReady: ready,
+    channelFor: (machineId) => ({
+      sendFrame: (frame) => {
+        sent.push({ machineId, frame });
+      },
+    }),
+  };
+  return { machines, sent };
+}
+
+test("dismissing a session's notification that still waits is recorded for the page and told to the open windows; settled, quiet and generic ones are not", async () => {
+  const { push, registration, shown, dismissed, removals, clock } =
+    await pairedWorker();
+  await spendRemovals(removals, clock.now, COSTLY_REMOVALS_PER_DAY);
+  const attention = (
+    sessionId: string,
+    windows: readonly { visible: boolean }[] = [],
+  ) =>
+    push(
+      {
+        kind: "attention",
+        sessionId,
+        reason: "question",
+        title: sessionId,
+        project: "p",
+        detail: "",
+      },
+      windows,
+    );
+  await attention("s1"); // a session's notification, still waiting
+  await push({ kind: "clear", sessionId: "s1" }); // past the cap: replaced by a settled one
+  await attention("s2"); // a session's notification, still waiting
+  await attention("s3", [{ visible: true }]); // quiet, with its session's content
+  await push({ kind: "clear", sessionId: "s4" }); // quiet, its session named
+  await handlePush(
+    {
+      clients: fakeClients([]),
+      registration,
+      quietWhileOpen: async () => true,
+      notifyKeys: async () => new Map(),
+      notifyDetail: async () => "preview",
+      forgetDismissed: async () => undefined,
+      ...noClears(),
+    },
+    undefined,
+  ); // the generic one
+
+  const { window, seen } = recordingWindow();
+  const { clients } = recordingClients([window]);
+  // The user swipes each away, in turn; s1's first was replaced by its
+  // settled one before it could be.
+  expect(shown[1]?.options.data).toEqual({
+    machineId: "m1",
+    sessionId: "s1",
+    settled: true,
+  });
+  for (const { options } of shown.slice(1))
+    await reportDismissed(
+      { clients, recordDismissed: (target) => dismissed.record(target) },
+      { tag: options.tag, data: options.data },
+    );
+
+  expect(seen.messages).toEqual([
+    { type: "notice-dismissed", machineId: "m1", sessionId: "s2" },
+  ]);
+  const { machines, sent } = recordingMachines();
+  await dismissed.report(machines);
+  expect(sent).toEqual([
+    { machineId: "m1", frame: { t: "noticeSeen", sessionId: "s2" } },
+  ]);
+});
+
+test("a new notice for a session supersedes the dismissal of its last one, so the page never reports the new one seen", async () => {
+  const { push, shown, dismissed } = await pairedWorker();
+  const attention = (
+    sessionId: string,
+    windows: readonly { visible: boolean }[] = [],
+  ) =>
+    push(
+      {
+        kind: "attention",
+        sessionId,
+        reason: "idle",
+        title: sessionId,
+        project: "p",
+        detail: "",
+      },
+      windows,
+    );
+  await attention("s1");
+  await attention("s2");
+  const { clients } = recordingClients([]);
+  for (const { options } of shown)
+    await reportDismissed(
+      { clients, recordDismissed: (target) => dismissed.record(target) },
+      { tag: options.tag, data: options.data },
+    );
+  // s1 waits again: shown, or quiet while the app is on screen.
+  await attention("s1");
+  await attention("s2", [{ visible: true }]);
+
+  const { machines, sent } = recordingMachines();
+  await dismissed.report(machines);
+  expect(sent).toEqual([]);
+});
+
+test("the dismissal record keeps the newest, each session once, and only what the page could not tell yet", async () => {
+  const storage = fakeCaches();
+  const dismissed = new DismissedNotices(storage.caches);
+  const past = DISMISSED_NOTICES_MAX + 8;
+  // A "clear all" dismisses every one at once: each lands, and past the
+  // bound the oldest go (s0..s7).
+  await Promise.all(
+    Array.from({ length: past }, (_, i) =>
+      dismissed.record({ machineId: "m1", sessionId: `s${i}` }),
+    ),
+  );
+  // Dismissed again, a session moves to the newest end instead of doubling.
+  const again = `s${past - DISMISSED_NOTICES_MAX}`;
+  await dismissed.record({ machineId: "m1", sessionId: again });
+  // One more pushes out the oldest left (s9).
+  await dismissed.record({ machineId: "m2", sessionId: "s1" });
+
+  // m2's channel is not ready: its dismissal stays for the next report.
+  const early = recordingMachines((machineId) => machineId === "m1");
+  await dismissed.report(early.machines);
+  const kept = [
+    ...Array.from(
+      { length: DISMISSED_NOTICES_MAX - 2 },
+      (_, i) => `s${past - DISMISSED_NOTICES_MAX + 2 + i}`,
+    ),
+    again,
+  ];
+  expect(early.sent.map(({ frame }) => frame)).toEqual(
+    kept.map((sessionId) => ({ t: "noticeSeen", sessionId })),
+  );
+
+  const later = recordingMachines();
+  await dismissed.report(later.machines);
+  expect(later.sent).toEqual([
+    { machineId: "m2", frame: { t: "noticeSeen", sessionId: "s1" } },
+  ]);
 });

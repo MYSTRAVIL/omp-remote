@@ -137,11 +137,11 @@ export type AgentDiagnostic =
     }
   | {
       /**
-       * `agent.phoneId` names another phone than the newest one the pairing
-       * store trusts: a pairing stopped between trusting its phone and saving
-       * the config, or the config was edited. The uplink serves the newest
-       * trusted phone. `phone-not-trusted`: the store trusts no phone by that
-       * id; `newer-phone-trusted`: it trusted another one after it.
+       * `agent.phoneId` does not name the newest phone the pairing store
+       * trusts (#14). `phone-not-trusted` (warn): the store trusts no phone by
+       * that id, and the uplink serves the newest trusted phone instead.
+       * `newer-phone-trusted` (info): the store trusted another phone after
+       * it; the uplink serves the named phone all the same.
        */
       event: "uplink_phone_diverged";
       code: ServedPhoneDivergence;
@@ -258,7 +258,6 @@ function levelOf(event: AgentDiagnostic): DiagnosticLevel {
     case "uplink_backlog_overflow":
     case "uplink_frames_dropped":
     case "uplink_not_started":
-    case "uplink_phone_diverged":
     case "collab_discovery_failed":
     case "collab_attach_failed":
     case "collab_not_started":
@@ -269,6 +268,8 @@ function levelOf(event: AgentDiagnostic): DiagnosticLevel {
       return "warn";
     case "control_outcome":
       return event.outcome === "rejected" ? "warn" : "info";
+    case "uplink_phone_diverged":
+      return event.code === "phone-not-trusted" ? "warn" : "info";
     case "session_spawned":
       return event.outcome === "failed" ? "warn" : "info";
     default:

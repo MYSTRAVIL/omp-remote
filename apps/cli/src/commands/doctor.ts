@@ -21,7 +21,10 @@ export interface CheckResult {
   name: string;
   /** `warn`: it works, but something is off; only `fail` fails doctor. */
   status: "ok" | "warn" | "fail";
-  /** For a warning or failure: what is wrong and how to fix it. */
+  /**
+   * For a warning or failure: what is wrong and how to fix it. For a pass: an
+   * informational note, when there is something worth knowing.
+   */
   detail?: string;
 }
 
@@ -214,16 +217,18 @@ export function doctorChecks(cfg: Config): Check[] {
             "paired phone",
             "no phone is paired with this machine → omp-remote pair",
           );
-        // The agent serves the newest trusted phone whatever the config says
-        // (`servedPhone`), but a config naming another one is off.
         if (served.diverged === undefined) return pass("paired phone");
-        const named =
-          served.diverged === "phone-not-trusted"
-            ? `agent.phoneId names a phone ${secretPaths.pairing} does not trust`
-            : "agent.phoneId names a phone paired before the newest one";
+        // A trusted `agent.phoneId` is served even when a newer phone was
+        // paired (`servedPhone`, #14): a working choice, noted, not warned.
+        if (served.diverged === "newer-phone-trusted")
+          return {
+            name: "paired phone",
+            status: "ok",
+            detail: `the agent serves agent.phoneId (${served.peer.id}); a phone paired after it is not served`,
+          };
         return warn(
           "paired phone",
-          `${named}; the agent serves the newest paired phone (${served.peer.id}) instead → set agent.phoneId to it in ${configPath()}, or pair again: omp-remote pair`,
+          `agent.phoneId names a phone ${secretPaths.pairing} does not trust; the agent serves the newest paired phone (${served.peer.id}) instead → set agent.phoneId to it in ${configPath()}, or pair again: omp-remote pair`,
         );
       },
       async () =>
@@ -262,7 +267,12 @@ export async function doctor(
   let failed = false;
   for (const check of doctorChecks(cfg)) {
     const result = await check();
-    if (result.status === "ok") print(`ok   ${result.name}`);
+    if (result.status === "ok")
+      print(
+        result.detail === undefined
+          ? `ok   ${result.name}`
+          : `ok   ${result.name}: ${result.detail}`,
+      );
     else {
       if (result.status === "fail") failed = true;
       print(

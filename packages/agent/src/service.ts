@@ -109,12 +109,23 @@ export interface CollabRegistration {
   close(): void;
 }
 
-/** Cap on retained transcript entries per session (drop-oldest); bounds the
- *  memory a long-running session's backfill buffer can consume. */
+/** Cap on retained transcript entries (`m:`/`t:` keys) per session
+ *  (drop-oldest); bounds the memory a long-running session's backfill buffer
+ *  can consume. The {@link SINGLETON_KEYS} never count against it. */
 const HISTORY_MAX = 1000;
 /** A session's retained frames, keyed `m:<msgId>` / `t:<callId>` / `state` /
- *  `jobs`, coalesced to the latest per key with insertion order kept for replay. */
+ *  `jobs` / `modelCatalog`, coalesced to the latest per key with insertion
+ *  order kept for replay. */
 type SessionHistory = Map<string, UplinkFrame>;
+/** History keys holding a session's one latest state/jobs/catalog frame. They
+ *  are never evicted: `modelCatalog` in particular is only re-sent when it
+ *  changes or the bridge reconnects, so a phone's reconnect backfill is its
+ *  only source of the model picker. */
+const SINGLETON_KEYS: ReadonlySet<string> = new Set([
+  "state",
+  "jobs",
+  "modelCatalog",
+]);
 
 /**
  * True when `frame` streams new text into a retained reply that a later user
@@ -322,7 +333,14 @@ export class AgentService {
           if (previous && previous !== conn) previous.close();
           return;
         }
+        const replaced = this.#conns.get(sessionId);
         this.#conns.set(sessionId, conn);
+        // A resumed omp keeps the session id, so its bridge can say hello
+        // before the old process's bridge is gone. The replaced conn stays
+        // open: closed, its bridge would reconnect and take the session back,
+        // and two live bridges would trade it on every retry. The ownership
+        // checks on `bye` and close keep it from deregistering the session.
+        if (replaced) this.#forgetProcess(sessionId);
         this.#registry.upsert(f.session);
         this.#diagnostic({
           event: "ipc_session_connected",
@@ -352,10 +370,14 @@ export class AgentService {
         return;
       }
       if (f.t === "bye") {
-        this.#registry.remove(f.sessionId);
-        this.#conns.delete(f.sessionId);
-        this.#dropRetained(f.sessionId);
-        this.#spawnIds.delete(f.sessionId);
+        // Only the session's current conn may deregister it: a replaced
+        // bridge's shutdown `bye` can land after its replacement's hello.
+        if (f.sessionId !== sessionId || this.#conns.get(sessionId) !== conn)
+          return;
+        this.#registry.remove(sessionId);
+        this.#conns.delete(sessionId);
+        this.#dropRetained(sessionId);
+        this.#spawnIds.delete(sessionId);
         return;
       }
       if (
@@ -780,11 +802,7 @@ export class AgentService {
     // and that close then returns early: the dead process's questions and
     // waits would otherwise be replayed forever, and the prompts it held never
     // come back. History and media stay valid.
-    if (this.#collab.has(meta.id)) {
-      this.#pending.delete(meta.id);
-      this.#waits.delete(meta.id);
-      this.#prompts.drop(meta.id);
-    }
+    if (this.#collab.has(meta.id)) this.#forgetProcess(meta.id);
     this.#collab.set(meta.id, onDownlink);
     this.#diagnostic({
       event: "collab_session_registered",
@@ -948,9 +966,14 @@ export class AgentService {
     if (frame.t === "msg" && overtaken(history, key, frame))
       history.delete(key);
     history.set(key, frame);
-    if (history.size > HISTORY_MAX) {
-      const oldest = history.keys().next().value;
-      if (oldest !== undefined) history.delete(oldest);
+    if (SINGLETON_KEYS.has(key)) return;
+    let singletons = 0;
+    for (const k of SINGLETON_KEYS) if (history.has(k)) singletons++;
+    if (history.size - singletons <= HISTORY_MAX) return;
+    for (const k of history.keys()) {
+      if (SINGLETON_KEYS.has(k)) continue;
+      history.delete(k);
+      return;
     }
   }
   /** Track a session's unanswered interactions; `interactionEnd` settles one. */
@@ -994,6 +1017,14 @@ export class AgentService {
       total -= perSession.get(oldest)?.bytes ?? 0;
       perSession.delete(oldest);
     }
+  }
+  /** Forget what a replaced process of a still-registered session was asking,
+   *  waiting on or holding: its replacement asks again for itself, and the
+   *  prompts the old omp held never come back. History and media stay valid. */
+  #forgetProcess(sessionId: string): void {
+    this.#pending.delete(sessionId);
+    this.#waits.delete(sessionId);
+    this.#prompts.drop(sessionId);
   }
   /** Forget a retired session's backfill: transcript, pending interactions,
    *  media, its wait and the prompts its omp held. */

@@ -29,7 +29,8 @@ export interface PairingDeps {
    * `agent.phoneId`. It runs right after the store trusts the phone and
    * before pairing reports success, so no caller can stop in between. A
    * process that dies between the two writes leaves the phone trusted but not
-   * named, and `servedPhone` still picks it, as the newest trusted phone.
+   * named: `servedPhone` picks it, as the newest trusted phone, only when the
+   * config names no trusted phone; pairing again names it.
    */
   serve: (phonePub: string) => Promise<void>;
   /**
@@ -61,25 +62,28 @@ export interface PairingResult {
 }
 
 /**
- * Why `agent.phoneId` names another phone than the one served: it names no
- * trusted phone, or a phone was trusted after it.
+ * Why the phone served and `agent.phoneId` disagree with the newest trusted
+ * phone: `phoneId` names no trusted phone (the newest is served instead), or
+ * it names one trusted before the newest (it is served all the same).
  */
 export type ServedPhoneDivergence = "phone-not-trusted" | "newer-phone-trusted";
 
 /** The phone this machine's agent serves; see {@link servedPhone}. */
 export interface ServedPhone {
   peer: Peer;
-  /** Set when `agent.phoneId` names another phone than `peer`: why. */
+  /** Set when `agent.phoneId` does not name the newest trusted phone: why. */
   diverged?: ServedPhoneDivergence;
 }
 
 /**
- * The phone this machine's agent serves: the newest one `store` trusts. Each
- * pairing trusts its phone, then names it `agent.phoneId` (see
- * `PairingDeps.serve`), so `phoneId` names that newest phone unless a
- * pairing stopped between the two writes or the config was edited: then
- * `diverged` says how the config is off. With no `phoneId` the newest phone is
- * served as is. Undefined when no phone is trusted.
+ * The phone this machine's agent serves: the one `agent.phoneId` names when
+ * `store` trusts it, else the newest one `store` trusts. The config is the
+ * explicit choice and wins: the store's order records the last pairing, not
+ * which identity the phone kept (a phone can keep an earlier one when a
+ * pairing does not complete on its side), so the newest is only the fallback
+ * for a config naming no phone or one no longer trusted. `diverged` says when
+ * the served phone is not both the named one and the newest. Undefined when no
+ * phone is trusted.
  */
 export function servedPhone(
   store: PairingStore,
@@ -88,13 +92,10 @@ export function servedPhone(
   const newest = store.peers().at(-1);
   if (newest === undefined) return undefined;
   if (phoneId === undefined || phoneId === newest.id) return { peer: newest };
-  return {
-    peer: newest,
-    diverged:
-      store.peer(phoneId) === undefined
-        ? "phone-not-trusted"
-        : "newer-phone-trusted",
-  };
+  const named = store.peer(phoneId);
+  return named === undefined
+    ? { peer: newest, diverged: "phone-not-trusted" }
+    : { peer: named, diverged: "newer-phone-trusted" };
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;

@@ -37,7 +37,8 @@ test("trust upserts by id, and a phone trusted again becomes the newest", async 
   await a.trust({ id: "tablet", publicKey: "CCCC" });
   await a.trust({ id: "phone", publicKey: "BBBB" });
   expect(a.peer("phone")?.publicKey).toBe("BBBB");
-  // The agent serves the newest trusted phone: the one that paired last.
+  // Unless `agent.phoneId` names a trusted phone, the agent serves the newest
+  // trusted phone: the one that paired last.
   const b = new PairingStore(p);
   await b.load();
   expect(b.peers().map((peer) => peer.id)).toEqual(["tablet", "phone"]);

@@ -152,7 +152,7 @@ added with `join` has only an `agent` section.
 | `server.collabRelay` | `false` | Serve the OMP `/collab` relay. |
 | `server.pushSubject` | `mailto:omp-remote@localhost` | Contact address sent with push notifications. |
 | `agent.serverUrl` | none | Server address the agent dials. `http`, `https`, `ws` and `wss` all work. |
-| `agent.phoneId` | first paired phone | Which paired phone the agent talks to. |
+| `agent.phoneId` | newest paired phone | Which paired phone the agent talks to. Pairing sets it to the phone just paired. A paired phone named here is served even when another was paired after it; a name that is no longer paired falls back to the newest paired phone. |
 | `agent.collab` | `false` | Bridge OMP `/collab` sessions. Needs `server.collabRelay` on the server. |
 | `agent.ompBin` | `omp` | Path to the `omp` executable. |
 | `agent.devClient` | off | Local development client socket. Leave it unset. |

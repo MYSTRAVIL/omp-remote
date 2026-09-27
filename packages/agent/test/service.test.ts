@@ -1548,6 +1548,109 @@ test("an IPC msg frame that carries at keeps it, and its updates inherit it", as
   feed.close();
 });
 
+test("a replaced feed's late bye leaves the resumed session registered with its history", async () => {
+  const path = ipcAddr();
+  let helloes = 0;
+  const resumedHello = Promise.withResolvers<void>();
+  const oldClosed = Promise.withResolvers<void>();
+  svc = new AgentService({
+    token: "tok",
+    ipcPath: path,
+    diagnostic: (d) => {
+      if (d.event === "ipc_session_disconnected") oldClosed.resolve();
+      if (d.event !== "ipc_session_connected") return;
+      helloes += 1;
+      if (helloes === 2) resumedHello.resolve();
+    },
+  });
+  await svc.start();
+  const old = await openFeed(svc, path);
+  const relayed = nextMsg(svc);
+  // The old process asks a question it will never see answered.
+  old.send(ask);
+  old.send({
+    t: "msg",
+    sessionId: meta.id,
+    phase: "end",
+    msgId: "m1",
+    role: "assistant",
+    text: "Before the resume",
+  });
+  await relayed;
+  expect(svc.replay().some((m) => m.t === "interaction")).toBe(true);
+
+  // `omp --resume` keeps the id: the new bridge says hello while the old
+  // process is still shutting down...
+  const resumed = await connectIpc(path, "tok");
+  const interrupted = Promise.withResolvers<Frame>();
+  resumed.onFrame(interrupted.resolve);
+  resumed.send({ t: "hello", token: "tok", session: meta });
+  await resumedHello.promise;
+  // ...and the old bridge's shutdown bye lands after that hello.
+  old.send({ t: "bye", sessionId: meta.id });
+  old.close();
+  await oldClosed.promise;
+
+  expect(svc.snapshot()).toEqual({ t: "sessions", sessions: [meta] });
+  const replayed = svc.replay();
+  expect(replayed.find((m) => m.t === "msg")).toMatchObject({
+    msgId: "m1",
+    text: "Before the resume",
+  });
+  // The dead process's question goes with it; the resumed bridge re-asks
+  // whatever its own omp still waits on.
+  expect(replayed.some((m) => m.t === "interaction")).toBe(false);
+  svc.deliverDownlink({ t: "interrupt", sessionId: meta.id });
+  expect(await interrupted.promise).toEqual({
+    t: "interrupt",
+    sessionId: meta.id,
+  });
+  resumed.close();
+});
+
+test("retaining past the transcript cap still replays the state, catalog and jobs", () => {
+  svc = new AgentService({ token: "tok", ipcPath: ipcAddr() });
+  const registration = svc.registerCollabSession(meta, () => {});
+  const state = stateFrame(false);
+  const catalog: UplinkFrame = {
+    t: "modelCatalog",
+    sessionId: meta.id,
+    models: [],
+    roles: [],
+  };
+  const jobs: UplinkFrame = {
+    t: "jobs",
+    sessionId: meta.id,
+    running: [],
+    recent: 0,
+  };
+  // The bridge publishes these on connect, before any transcript entry.
+  registration.emit(state);
+  registration.emit(catalog);
+  registration.emit(jobs);
+  // A long session: two more transcript entries than the host retains.
+  for (let i = 0; i < 1002; i++)
+    registration.emit({
+      t: "msg",
+      sessionId: meta.id,
+      phase: "end",
+      msgId: `m${i}`,
+      role: "assistant",
+      text: `entry ${i}`,
+      at: 1,
+    });
+
+  const replayed = svc.replay();
+  // The singletons keep their place ahead of the transcript...
+  expect(replayed.slice(2, 5)).toEqual([state, catalog, jobs]);
+  // ...and only the oldest transcript entries are evicted.
+  const msgIds = replayed.flatMap((m) => (m.t === "msg" ? [m.msgId] : []));
+  expect(msgIds).toHaveLength(1000);
+  expect(msgIds[0]).toBe("m2");
+  expect(msgIds.at(-1)).toBe("m1001");
+  registration.close();
+});
+
 const ask: InteractionFrame = {
   t: "interaction",
   sessionId: meta.id,

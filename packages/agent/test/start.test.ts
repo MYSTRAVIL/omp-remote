@@ -177,15 +177,27 @@ async function phoneOn(
   return { channel, ready: ready.promise, refused: refused.promise };
 }
 
-test("an agent whose config names an older phone serves the newest paired one, logs so, and the older phone is told to pair again", async () => {
+/**
+ * A server and an agent for `box` whose pairing store trusts two phones,
+ * `older` then `newer`, with `agent.phoneId` set to `phoneId(older, newer)`,
+ * and the agent's diagnostic lines split by level. `token` signs a phone in.
+ */
+async function twoPhoneHost(
+  phoneId: (older: string, newer: string) => string,
+): Promise<{
+  http: string;
+  token: string;
+  older: SessionKeys;
+  newer: SessionKeys;
+  warnings: string[];
+  infos: string[];
+}> {
   const { dir } = await freshState();
   const machines = await MachineStore.load(secretPaths.machines);
   await writeFile(
     secretPaths.agentToken,
     await machines.issue("box", Date.now()),
   );
-  // A pairing that stopped after trusting its phone: the store trusts two
-  // phones, and the config still names the first.
   const older = await newIdentity();
   const newer = await newIdentity();
   const pairing = new PairingStore(secretPaths.pairing);
@@ -202,7 +214,10 @@ test("an agent whose config names an older phone serves the newest paired one, l
     version: 1,
     machineId: "box",
     server: { listen: { host: "127.0.0.1", port: 0 }, webRoot: dir },
-    agent: { serverUrl: "http://127.0.0.1:8788", phoneId: older.publicKey },
+    agent: {
+      serverUrl: "http://127.0.0.1:8788",
+      phoneId: phoneId(older.publicKey, newer.publicKey),
+    },
   });
   const server = await startServer(cfg);
   cleanups.push(() => server.stop());
@@ -215,33 +230,64 @@ test("an agent whose config names an older phone serves the newest paired one, l
   const { token } = z.object({ token: z.string() }).parse(await login.json());
 
   const warnings: string[] = [];
+  const infos: string[] = [];
   const warn = spyOn(console, "error").mockImplementation((line: unknown) => {
     warnings.push(String(line));
   });
   cleanups.push(() => warn.mockRestore());
+  const info = spyOn(console, "log").mockImplementation((line: unknown) => {
+    infos.push(String(line));
+  });
+  cleanups.push(() => info.mockRestore());
   const agent = await startAgent(
     Config.parse({ ...cfg, agent: { ...cfg.agent, serverUrl: http } }),
   );
   cleanups.push(() => agent.stop());
-  expect(
-    warnings.filter((line) => line.includes('"uplink_phone_diverged"')),
-  ).toEqual([expect.stringContaining('"code":"newer-phone-trusted"')]);
+  const hostPub = pairing.self().publicKey;
+  return {
+    http,
+    token,
+    older: await clientSessionKeys(older, hostPub),
+    newer: await clientSessionKeys(newer, hostPub),
+    warnings,
+    infos,
+  };
+}
+
+const diverged = (lines: string[]): string[] =>
+  lines.filter((line) => line.includes('"uplink_phone_diverged"'));
+
+// #14: a newer pairing the phone did not keep must not take over from the
+// phone the config names.
+test("an agent whose config names a trusted phone paired before the newest serves the named one, notes so, and the newest is told to pair again", async () => {
+  const { http, token, older, newer, warnings, infos } = await twoPhoneHost(
+    (named) => named,
+  );
+  expect(diverged(warnings)).toEqual([]);
+  expect(diverged(infos)).toEqual([
+    expect.stringContaining('"code":"newer-phone-trusted"'),
+  ]);
+
+  // The named phone's hello is acked: the agent holds its keys.
+  const named = await phoneOn(http, token, older);
+  named.channel.hello();
+  await named.ready;
+  // The phone paired after it is told, through the relay, to pair again.
+  const unserved = await phoneOn(http, token, newer);
+  unserved.channel.hello();
+  expect(await unserved.refused).toBe("auth-failed");
+});
+
+test("an agent whose config names a phone the store does not trust serves the newest paired one and warns so", async () => {
+  const { http, token, newer, warnings } = await twoPhoneHost(
+    () => "phone-gone",
+  );
+  expect(diverged(warnings)).toEqual([
+    expect.stringContaining('"code":"phone-not-trusted"'),
+  ]);
 
   // The newest phone's hello is acked: the agent holds its keys.
-  const hostPub = pairing.self().publicKey;
-  const current = await phoneOn(
-    http,
-    token,
-    await clientSessionKeys(newer, hostPub),
-  );
+  const current = await phoneOn(http, token, newer);
   current.channel.hello();
   await current.ready;
-  // The phone the config named is told, through the relay, to pair again.
-  const dropped = await phoneOn(
-    http,
-    token,
-    await clientSessionKeys(older, hostPub),
-  );
-  dropped.channel.hello();
-  expect(await dropped.refused).toBe("auth-failed");
 });

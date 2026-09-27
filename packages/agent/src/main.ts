@@ -122,9 +122,10 @@ export async function startAgent(cfg: Config): Promise<RunningAgent> {
     } else {
       const store = new PairingStore(secretPaths.pairing, secretOptions);
       await store.load();
-      // The newest trusted phone, even when the config names another: a
-      // pairing that stopped between trusting its phone and saving it as
-      // `agent.phoneId` must not leave the agent keyed to a phone that is gone.
+      // The trusted phone the config names, else the newest trusted phone: a
+      // config naming a phone that is gone must not leave the agent keyed to
+      // nobody, and an explicit choice must not lose to a newer pairing the
+      // phone may not have kept (#14).
       const served = servedPhone(store, agent.phoneId);
       if (served === undefined)
         diagnostic({ event: "uplink_not_started", code: "pairing-not-found" });

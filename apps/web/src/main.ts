@@ -41,6 +41,7 @@ import {
   browserSocket,
 } from "./core/client";
 import { connectionStatus } from "./core/connection-state";
+import { DismissedNotices } from "./core/dismissed-notices";
 import { installSessionHistory } from "./core/history-nav";
 import { randomId } from "./core/ids";
 import { LaunchPreferences } from "./core/launch-preferences";
@@ -68,7 +69,7 @@ import { AppStore } from "./core/store";
 import { type NotifyMachine, saveNotifyKeys } from "./core/sw-caches";
 import {
   OPEN_PARAM,
-  OpenSessionMessage,
+  WorkerMessage,
   closeSettled,
   openSessionTarget,
   sessionTag,
@@ -700,6 +701,19 @@ function copyNotifyKeys(): void {
     });
 }
 
+// The session notifications the user dismissed on this device, which the
+// worker records here: each machine is told once its channel is ready
+// (`noticeSeen`), so it sends no clear for a notification already gone. A
+// clear finding nothing to close is a push that shows nothing (see
+// `clearSession` in core/sw-push). Reported on sign-in, on every channel
+// ready, whenever the page comes back on screen, and when the worker says
+// one was just dismissed.
+const dismissedNotices =
+  workerCaches === undefined ? undefined : new DismissedNotices(workerCaches);
+function reportDismissedNotices(): void {
+  if (client !== undefined) void dismissedNotices?.report(client);
+}
+
 /**
  * The user sees this page now: close the notifications that only say a
  * session no longer waits, and the notification of the session selected,
@@ -785,6 +799,7 @@ async function connect(token: string): Promise<void> {
     tokenExpiresAt: sessionTokenExpMs(token),
     checkSession: () => checkSession(authDeps, token),
     notifyAwaySec: (machineId) => awayPolicy.awaySec(machineId),
+    onChannelReady: reportDismissedNotices,
   });
   client = next;
   next.start();
@@ -792,6 +807,7 @@ async function connect(token: string): Promise<void> {
   // screen is up and this client is gone, so draw no workspace for it.
   if (client !== next) return;
   draw();
+  reportDismissedNotices();
   void push.signedIn(token);
   // A notification tapped before sign-in, or before a reload, opens its
   // session once its list is current.
@@ -976,10 +992,13 @@ if (!isLocalDev && navigator.serviceWorker) {
       }),
     );
   });
-  // A tapped notification asks this window to open its session.
+  // A tapped notification asks this window to open its session; a dismissed
+  // one is reported to its machine.
   navigator.serviceWorker.addEventListener("message", (event) => {
-    const message = OpenSessionMessage.safeParse(event.data);
-    if (message.success) taps.tapped(message.data);
+    const message = WorkerMessage.safeParse(event.data);
+    if (!message.success) return;
+    if (message.data.type === "open-session") taps.tapped(message.data);
+    else reportDismissedNotices();
   });
 }
 document.body.append(pairStatus, pairPrompt.node);
@@ -1014,6 +1033,7 @@ push.subscribe(() => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") return;
   closeSeenNotification();
+  reportDismissedNotices();
   client?.probe();
 });
 // The connection dot follows the network too; the redial alone may leave the

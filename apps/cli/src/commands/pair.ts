@@ -56,8 +56,8 @@ export async function pairingPhoneUrl(
 
 /**
  * Whether this machine still has to pair a phone: it holds no machine token,
- * or `pairing.json` trusts no phone for the agent to serve (the newest one,
- * whatever `agent.phoneId` names; see `servedPhone`).
+ * or `pairing.json` trusts no phone for the agent to serve (any trusted phone
+ * will do: `servedPhone` falls back to the newest).
  */
 export async function needsPairing(cfg: AgentConfig): Promise<boolean> {
   if ((await readSecret(secretPaths.agentToken)) === undefined) return true;
