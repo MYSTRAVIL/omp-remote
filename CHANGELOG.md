@@ -5,6 +5,8 @@ All notable changes to omp-remote are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-27
+
 ### Added
 
 - **App badge.** The installed app's icon shows how many sessions wait on you.
@@ -18,6 +20,7 @@ All notable changes to omp-remote are documented here. The format follows
 - The host now remembers when a session started waiting for your turn and replays it, so a phone that opens cold or reloads still colors that session as waiting. Sessions fed by the IPC bridge now forward "your turn" to the phone at all.
 - The session list shows only machines and projects with a session. A machine with none is left out (New session still lists every online machine), and when nothing is running the list says so once.
 - A headless omp run (`omp -p`, rpc) its host cannot reach is no longer listed as "Unreachable". The bridge now marks such sessions headless. An interactive session its host cannot reach is still listed as "Unreachable".
+- Images attached in the composer show above the text input.
 
 ### Fixed
 
@@ -220,6 +223,7 @@ All notable changes to omp-remote are documented here. The format follows
   each side refuses counters it has already seen. The phone PWA and the
   host-agent must be updated together: neither accepts the old envelope.
 
-[Unreleased]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MYSTRAVIL/omp-remote/releases/tag/v0.1.0
