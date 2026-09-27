@@ -26,14 +26,18 @@ export function feedMsgId(
  * with the same role and millisecond (it can only start after the earlier one
  * ended) takes the next occurrence. Only the last ended message per role is
  * remembered: timestamps only grow, so an older one never comes back.
+ *
+ * omp fires one more update after an assistant `message_end`, carrying the
+ * ended text again (its final snapshot). {@link repeatsEnded} tells that echo
+ * from a second message in the same millisecond, which starts from other text.
  */
 export class FeedMsgIds {
   /** The occurrence open (streaming) per role + timestamp. */
   readonly #open = new Map<string, number>();
-  /** Per role, the timestamp and occurrence of the message that ended last. */
+  /** Per role, the timestamp, occurrence and text of the message that ended last. */
   readonly #ended = new Map<
     string,
-    { timestamp: number; occurrence: number }
+    { timestamp: number; occurrence: number; text: string }
   >();
 
   /** The row of an event of the message with this role and timestamp. */
@@ -41,12 +45,22 @@ export class FeedMsgIds {
     return feedMsgId(role, timestamp, this.#occurrence(role, timestamp));
   }
 
-  /** The row of the message's last event: it ends here. */
-  end(role: string, timestamp: number): string {
+  /** The row of the message's last event, with its final text: it ends here. */
+  end(role: string, timestamp: number, text: string): string {
     const occurrence = this.#occurrence(role, timestamp);
     this.#open.delete(feedMsgId(role, timestamp));
-    this.#ended.set(role, { timestamp, occurrence });
+    this.#ended.set(role, { timestamp, occurrence, text });
     return feedMsgId(role, timestamp, occurrence);
+  }
+
+  /**
+   * The event repeats the message that just ended (same role, millisecond and
+   * text) and opens nothing: omp's trailing snapshot, to be dropped.
+   */
+  repeatsEnded(role: string, timestamp: number, text: string): boolean {
+    if (this.#open.has(feedMsgId(role, timestamp))) return false;
+    const last = this.#ended.get(role);
+    return last?.timestamp === timestamp && last.text === text;
   }
 
   #occurrence(role: string, timestamp: number): number {

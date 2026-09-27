@@ -110,6 +110,35 @@ test("a streamed reply keys its row by its timestamp, the same row its snapshot 
   ]);
 });
 
+test("omp's trailing update after a reply ends opens no second row; a new reply in that millisecond still does", () => {
+  const live = new CollabTranslator("s");
+  const event = (type: string, text: string) =>
+    live.host({
+      t: "event",
+      event: {
+        type,
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text }],
+          timestamp: 1_000,
+        },
+      },
+    });
+  const frames = msgs([
+    ...event("message_update", "Hi"),
+    ...event("message_end", "Hi there"),
+    // omp's final snapshot, repeating the ended reply.
+    ...event("message_update", "Hi there"),
+    // A genuinely new reply sharing the millisecond starts from other text.
+    ...event("message_update", "Also"),
+  ]);
+  expect(frames.map((m) => [m.phase, m.msgId, m.text])).toEqual([
+    ["start", "assistant-1000", "Hi"],
+    ["end", "assistant-1000", "Hi there"],
+    ["start", "assistant-1000-2", "Also"],
+  ]);
+});
+
 test("the injected prompt appears exactly once, as the user's message", () => {
   const out = replayTrace();
   const userMsgs = msgs(out).filter((m) => m.role === "user");

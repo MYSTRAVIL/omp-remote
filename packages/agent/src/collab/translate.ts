@@ -311,7 +311,7 @@ export class CollabTranslator {
       // settles the phone's copy of it too.
       const msgId =
         role === "assistant" && timestamp !== undefined
-          ? this.#ids.end("assistant", timestamp)
+          ? this.#ids.end("assistant", timestamp, text)
           : (entry.id ?? `e${++this.#seq}`);
       if (text || role === "user")
         out.push(
@@ -394,11 +394,18 @@ export class CollabTranslator {
     // doubling them or reusing a synthetic id. A message without one streams
     // under a synthetic id until it ends.
     const timestamp = epochMs(message.timestamp);
+    // omp's trailing snapshot after `message_end` repeats the ended reply.
+    if (
+      !isEnd &&
+      timestamp !== undefined &&
+      this.#ids.repeatsEnded("assistant", timestamp, text)
+    )
+      return [];
     const id =
       timestamp === undefined
         ? (this.#streamId ?? `a${++this.#seq}`)
         : isEnd
-          ? this.#ids.end("assistant", timestamp)
+          ? this.#ids.end("assistant", timestamp, text)
           : this.#ids.id("assistant", timestamp);
     const streamed = this.#streamId === id;
     if (isEnd) {

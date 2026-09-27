@@ -151,8 +151,10 @@ function deliverPrompt(
       : "active-follow-up";
 }
 
-// Permissive JSON Schema for the shadow `ask` — omp validates the model's call against
-// it, so it stays loose (the raw params are forwarded to the native tool and the phone).
+// JSON Schema for the shadow `ask` — omp validates the model's call against it, and
+// the raw params are forwarded to the native tool and the phone. Options match omp's
+// own `OptionItem` ({label, description?, preview?}), which the desk dialog reads;
+// strict providers reject an array without `items`.
 // omp accepts a plain JSON Schema here (verified against the live 18.1.14 binary); its
 // public `ToolDefinition` types the field as TypeBox `TSchema`, hence the boundary cast.
 const ASK_PARAMETERS = {
@@ -166,7 +168,19 @@ const ASK_PARAMETERS = {
         properties: {
           id: { type: "string" },
           question: { type: "string" },
-          options: { type: "array" },
+          header: { type: "string" },
+          options: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                label: { type: "string" },
+                description: { type: "string" },
+                preview: { type: "string" },
+              },
+              required: ["label"],
+            },
+          },
           multi: { type: "boolean" },
           recommended: { type: "number" },
         },
@@ -860,8 +874,10 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     guard((event: MessageUpdateEvent) => {
       const message = event.message;
       if (message.role !== "assistant") return;
-      const msgId = feedIds.id("assistant", message.timestamp);
       const text = textOf(message.content);
+      // omp's trailing snapshot after `message_end` repeats the ended reply.
+      if (feedIds.repeatsEnded("assistant", message.timestamp, text)) return;
+      const msgId = feedIds.id("assistant", message.timestamp);
       // Thinking and tool-call deltas leave the text empty or unchanged; a
       // frame for each would only churn the sealed channel and the phone.
       const unchanged = streamed?.msgId === msgId && streamed.text === text;
@@ -891,20 +907,16 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     guard((event: MessageEndEvent) => {
       const message = event.message;
       if (message.role === "assistant") {
-        const msgId = feedIds.end("assistant", message.timestamp);
         const text = textOf(message.content);
+        const msgId = feedIds.end("assistant", message.timestamp, text);
         if (text !== "" || streamed?.msgId === msgId)
           bridge?.emitMsg({ phase: "end", msgId, role: "assistant", text });
         return;
       }
       if (message.role !== "user") return;
-      const msgId = feedIds.end("user", message.timestamp);
-      bridge?.emitMsg({
-        phase: "end",
-        msgId,
-        role: "user",
-        text: textOf(message.content),
-      });
+      const text = textOf(message.content);
+      const msgId = feedIds.end("user", message.timestamp, text);
+      bridge?.emitMsg({ phase: "end", msgId, role: "user", text });
       sendImages(message.content, { kind: "message", msgId });
     }),
   );

@@ -57,7 +57,10 @@ export function historyFrames(
     if (entry.type !== "message") continue;
     const message = entry.message;
     if (message.role !== "user" && message.role !== "assistant") continue;
-    ids.set(entry, keyer.end(message.role, message.timestamp));
+    ids.set(
+      entry,
+      keyer.end(message.role, message.timestamp, textOf(message.content)),
+    );
   }
 
   // Walk back from the newest entry: a tool call's result, which follows the
