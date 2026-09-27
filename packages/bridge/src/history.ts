@@ -2,15 +2,16 @@ import type { SessionEntry } from "@oh-my-pi/pi-coding-agent";
 import {
   FeedMsgIds,
   type UplinkFrame,
-  parseXdevWrite,
+  describeToolCall,
+  toolPreview,
 } from "@omp-remote/protocol";
 
 /** Most transcript rows (messages and tool cards) a (re)connect re-sends. */
 const HISTORY_ROWS = 200;
-/** Most message text, in UTF-8 bytes, a (re)connect re-sends. Every session's
- *  backfill lands in each phone's replay, which the relay must hold unsent
- *  without passing its per-socket cap; the newest row goes regardless, as it
- *  went live at that size. */
+/** Most text, in UTF-8 bytes, a (re)connect re-sends: messages, and tool
+ *  cards' titles and bodies. Every session's backfill lands in each phone's
+ *  replay, which the relay must hold unsent without passing its per-socket
+ *  cap; the newest row goes regardless, as it went live at that size. */
 const HISTORY_TEXT_BYTES = 256 * 1024;
 
 /** The text blocks of a message's content, joined; "" when there are none. */
@@ -37,7 +38,8 @@ export function textOf(content: unknown): string {
  * Each row carries the id its live frame carries, so an open phone updates its
  * rows in place: every user message, an assistant message with text, and a
  * card per tool call (`ask` excepted; an `xd://` write under its device name),
- * done once its result is in. A message is `end`, stamped with the time omp
+ * titled and described as it was live, done once its result is in (and then
+ * showing the head of it). A message is `end`, stamped with the time omp
  * wrote it. Only the newest {@link HISTORY_ROWS} rows go, within
  * {@link HISTORY_TEXT_BYTES} of text; images are not re-sent.
  */
@@ -61,14 +63,14 @@ export function historyFrames(
   // Walk back from the newest entry: a tool call's result, which follows the
   // call, is met first. Rows collect newest first and are flipped at the end.
   const rows: UplinkFrame[] = [];
-  const answered = new Set<string>();
+  const results = new Map<string, { content: unknown; isError: boolean }>();
   let bytes = 0;
   for (let index = branch.length - 1; index >= from; index--) {
     const entry = branch[index];
     if (entry?.type !== "message") continue;
     const message = entry.message;
     if (message.role === "toolResult") {
-      answered.add(message.toolCallId);
+      results.set(message.toolCallId, message);
       continue;
     }
     if (message.role !== "user" && message.role !== "assistant") continue;
@@ -79,19 +81,27 @@ export function historyFrames(
     if (message.role === "assistant")
       for (const block of message.content.toReversed()) {
         if (block.type !== "toolCall" || block.name === "ask") continue;
-        const done = answered.has(block.id);
-        const xdev = parseXdevWrite(block.name, block.arguments);
+        const result = results.get(block.id);
+        const card = describeToolCall(
+          block.name,
+          block.arguments,
+          block.intent,
+        );
+        const preview = result
+          ? toolPreview(card, result.content)
+          : card.argument;
         own.push({
           row: {
             t: "tool",
             sessionId,
-            phase: done ? "end" : "start",
+            phase: result ? "end" : "start",
             callId: block.id,
-            name: xdev ? xdev.device : block.name,
-            status: done ? "done" : "running",
-            preview: "",
+            name: card.name,
+            status: !result ? "running" : result.isError ? "error" : "done",
+            title: card.title,
+            preview,
           },
-          size: 0,
+          size: Buffer.byteLength(card.title + preview, "utf8"),
         });
       }
     const text = textOf(message.content);

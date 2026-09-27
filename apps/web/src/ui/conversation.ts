@@ -22,6 +22,7 @@ import type { SessionCatalog } from "../core/store";
 import { messageTime } from "../core/time-format";
 import type {
   MediaEntry,
+  SentImage,
   TranscriptEntry,
   TranscriptState,
 } from "../core/transcript";
@@ -61,7 +62,8 @@ interface EntryView {
 }
 
 interface ComposerAttachment {
-  name: string;
+  /** The file uploaded: the prepared copy once preparation finished. */
+  file: File;
   objectUrl: string;
   status: "uploading" | "ready" | "error";
   progress: number;
@@ -1272,9 +1274,18 @@ class Composer {
       return;
     }
     const attachments: string[] = [];
+    const images: SentImage[] = [];
     for (const attachment of this.#attachments.values())
-      if (attachment.status === "ready" && attachment.resourceId)
+      if (attachment.status === "ready" && attachment.resourceId) {
         attachments.push(attachment.resourceId);
+        const { file } = attachment;
+        images.push({
+          url: attachment.objectUrl,
+          name: file.name,
+          mimeType: file.type,
+          size: file.size,
+        });
+      }
     if (!text && attachments.length === 0) return;
     const revision = this.#revision;
     this.#sending = mode;
@@ -1285,6 +1296,7 @@ class Composer {
         text,
         mode,
         attachments.length > 0 ? attachments : undefined,
+        images,
       );
       if (sent) {
         if (revision === this.#revision && this.input.value === rawDraft) {
@@ -1326,7 +1338,7 @@ class Composer {
     remove.addEventListener("click", () => this.#removeAttachment(id));
     node.append(thumb, bar, remove);
     const attachment: ComposerAttachment = {
-      name: file.name,
+      file,
       objectUrl,
       status: "uploading",
       progress: 0,
@@ -1353,7 +1365,7 @@ class Composer {
       const newObjectUrl = URL.createObjectURL(prepared);
       thumb.src = newObjectUrl;
       thumb.alt = prepared.name;
-      attachment.name = prepared.name;
+      attachment.file = prepared;
       attachment.objectUrl = newObjectUrl;
     }
 
@@ -1390,9 +1402,12 @@ class Composer {
     this.#updateButtons();
   }
 
+  /** Empty the composer once its prompt is sent. A sent photo's object URL
+   *  now shows it in the prompt's echo, so only the others are released. */
   #clearAttachments(): void {
     for (const attachment of this.#attachments.values()) {
-      URL.revokeObjectURL(attachment.objectUrl);
+      if (attachment.status !== "ready")
+        URL.revokeObjectURL(attachment.objectUrl);
       attachment.node.remove();
     }
     this.#attachments.clear();

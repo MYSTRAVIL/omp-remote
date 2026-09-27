@@ -102,6 +102,7 @@ function loadBridge(mode: "feed" | "collab", path: string) {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
     registerTool: noop,
+    registerFlag: noop,
     getSessionName: () => "Flaky test",
     getThinkingLevel: () => "high",
     getServiceTiers: () => ({}),

@@ -7,6 +7,8 @@ import type {
   InteractionPayload,
   InteractionResponse,
   JobRow,
+  MediaChunkFrame,
+  MediaInitFrame,
   ResourceChunkFrame,
   ResourceInitFrame,
   SessionMeta,
@@ -261,6 +263,7 @@ export class SessionBridge {
     callId: string;
     name: string;
     status: string;
+    title: string;
     preview: string;
   }): void {
     this.#send({ t: "tool", sessionId: this.#opts.meta.id, ...p });
@@ -317,16 +320,10 @@ export class SessionBridge {
       code,
     });
   }
-  emitMediaInit(p: {
-    mediaId: string;
-    anchor: { kind: "message"; msgId: string };
-    mimeType: string;
-    size: number;
-    totalChunks: number;
-  }): void {
+  emitMediaInit(p: Omit<MediaInitFrame, "t" | "sessionId">): void {
     this.#send({ t: "mediaInit", sessionId: this.#opts.meta.id, ...p });
   }
-  emitMediaChunk(p: { mediaId: string; index: number; data: string }): void {
+  emitMediaChunk(p: Omit<MediaChunkFrame, "t" | "sessionId">): void {
     this.#send({ t: "mediaChunk", sessionId: this.#opts.meta.id, ...p });
   }
   emitMediaError(mediaId: string, code: "too-large" | "internal"): void {

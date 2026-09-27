@@ -63,6 +63,13 @@ Every package is `@omp-remote/*`, Bun + TypeScript (strict), ESM. Libraries live
 - **Control (prompt / interrupt / spawn).** The signed-in PWA seals a control frame (no
   per-action passkey check since 2026-09-24); the aggregator relays it blind; the `Uplink` opens it and routes
   to the owning session's bridge (`deliverDownlink`), or `spawnSession` for `spawn`.
+  The PWA sends it at once only over a link known live (`PhoneClient.sendControl`): an ack
+  on the current socket, a line within the keepalive interval plus the pong deadline, no
+  resume probe pending. Otherwise it holds the frame unsealed per machine, probes or
+  redials, and seals it to the agent epoch the next ack verifies, once, ahead of that
+  ack's `sync`. A held frame expires (60 s; an interrupt 10 s) unsent, and a dropped
+  prompt's echo shows "not delivered". The host does not dedup prompts, so nothing is
+  resent.
 - **Attention.** The bridge derives "needs input"; the `Uplink` emits a content-free clear
   trigger alongside the sealed `AttentionFrame`; the aggregator sends a **payloadless** Web
   Push. Session identity lives only inside the sealed frame — zero content at the edge. The

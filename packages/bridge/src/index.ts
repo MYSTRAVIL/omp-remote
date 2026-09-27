@@ -8,16 +8,26 @@ import type {
   MessageEndEvent,
   MessageUpdateEvent,
   ToolDefinition,
+  ToolExecutionEndEvent,
+  ToolExecutionStartEvent,
 } from "@oh-my-pi/pi-coding-agent";
 import {
   type CatalogRole,
   FeedMsgIds,
+  type MediaInitFrame,
+  REMOTE_APPROVAL_FLAG,
   type SessionMeta,
+  type ToolCard,
   type UplinkFrame,
+  describeToolCall,
+  imageBlocks,
+  mediaTransfer,
   normalizeAskQuestions,
   parseXdevWrite,
+  toolPreview,
 } from "@omp-remote/protocol";
 import { ipcPath, resolveIpcToken } from "@omp-remote/protocol/ipc";
+import { approvalPrompt, gates, resolveApprovalGate } from "./approval-gate";
 import {
   type BridgeDiagnosticSink,
   type PromptDispatchRoute,
@@ -25,47 +35,12 @@ import {
 } from "./diagnostics";
 import { historyFrames, textOf } from "./history";
 import { runShadowAsk, runToolApproval } from "./interactions";
-import { chunkImage, imagesOf } from "./media-chunker";
 import {
   type AssembledResource,
   ResourceAssembler,
 } from "./resource-assembler";
 import { SessionBridge } from "./session-bridge";
 import { isSubagentSession } from "./subagent";
-
-/**
- * Opt-in remote tool approval, from `OMP_REMOTE_APPROVAL`:
- *   unset/`off` → never gate (default; the desk keeps omp's own approval mode)
- *   `all`       → gate every tool
- *   a CSV list  → gate exactly those tool names
- * The `ask` tool is never gated (it is the question channel itself).
- */
-type ApprovalGate =
-  | { mode: "off" }
-  | { mode: "all" }
-  | { mode: "list"; tools: Set<string> };
-
-function parseApprovalGate(raw: string | undefined): ApprovalGate {
-  const value = raw?.trim();
-  if (!value || value === "off" || value === "false") return { mode: "off" };
-  if (value === "all" || value === "true") return { mode: "all" };
-  return {
-    mode: "list",
-    tools: new Set(
-      value
-        .split(",")
-        .map((name) => name.trim())
-        .filter((name) => name.length > 0),
-    ),
-  };
-}
-
-function shouldGate(gate: ApprovalGate, toolName: string): boolean {
-  if (toolName === "ask") return false;
-  if (gate.mode === "off") return false;
-  if (gate.mode === "all") return true;
-  return gate.tools.has(toolName);
-}
 
 /** Pin the first non-empty session name; once pinned, later re-titles are ignored. */
 export function firstTitle(
@@ -314,9 +289,10 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
   pi.setLabel("omp-remote");
   const ompConfig = readOmpConfig();
   const mediaEmitted = new Map<string, number>(); // msgId → images already sent
-  // callId → xd:// device name, so the end card keeps the device label (the end
-  // event carries no args to re-derive it from).
-  const xdevDeviceByCall = new Map<string, string>();
+  // callId → the card its start described, for its end: the end event
+  // carries no args (an `xd://` write keeps its device name, the card its
+  // title and argument).
+  const toolCards = new Map<string, ToolCard>();
   let bridge: SessionBridge | undefined;
   const diagnostic = bridgeLoggerDiagnostic(pi.logger);
   // The IPC token (the per-install ipc-token file), read once per load. If it
@@ -592,7 +568,7 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     const current = generation;
     pinnedTitle = undefined;
     mediaEmitted.clear();
-    xdevDeviceByCall.clear();
+    toolCards.clear();
     attachedId = ctx.sessionManager.getSessionId();
     // A subagent is part of its parent's run: the parent's task card and job
     // list already show it. Announced, every `task` fan-out would add sessions
@@ -644,11 +620,76 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     );
   };
 
+  // The tool approval gate (approval-gate.ts). The host-agent passes this flag
+  // to a session it spawns for the phone with omp's own approval off.
+  // Registering it also makes an omp without this bridge refuse that command
+  // line (omp exits on an unknown flag) instead of running unapproved.
+  pi.registerFlag(REMOTE_APPROVAL_FLAG, {
+    type: "string",
+    description:
+      "Ask for tool approval at the terminal and on the omp-remote phone: always-ask or write, as --approval-mode means them",
+  });
+  /**
+   * Gate each tool call before it runs. `env` is the phone-only
+   * `OMP_REMOTE_APPROVAL` opt-in. `viaBridge` asks the phone through the
+   * bridge (the IPC feed); under Collab, omp mirrors the terminal dialog to
+   * the room's guests, the host-agent among them, instead. A failure blocks
+   * the call when the gate is the session's only approval; under omp's own
+   * approval it lets the call run, so our bug never wedges every tool.
+   */
+  const gateToolCalls = (opts: {
+    env: string | undefined;
+    viaBridge: boolean;
+  }): void => {
+    pi.on("tool_call", async (event, ctx) => {
+      // An `xd://` device call arrives twice: this outer `write` and a nested
+      // `tool_call` under the device's real name. Skip the outer one so the
+      // device is gated once, by its real name — never as a generic `write`.
+      if (parseXdevWrite(event.toolName, event.input)) return undefined;
+      const gate = resolveApprovalGate(
+        pi.getFlag(REMOTE_APPROVAL_FLAG),
+        opts.env,
+      );
+      if (!gates(gate, event.toolName, event.input)) return undefined;
+      try {
+        const title = approvalPrompt(event.toolName, event.input);
+        const decision = await runToolApproval({
+          id: `approval-${randomUUID()}`,
+          tool: event.toolName,
+          input: event.input,
+          raiser: opts.viaBridge ? bridge : undefined,
+          // omp pauses this handler's timeout while the dialog is open.
+          askLocal:
+            gate.desk && ctx.hasUI
+              ? async (signal) =>
+                  (await ctx.ui.select(title, ["Approve", "Deny"], {
+                    signal,
+                  })) === "Approve"
+              : undefined,
+        });
+        return decision.block ? decision : undefined;
+      } catch {
+        diagnostic({
+          event: "bridge_operation_failed",
+          code: "approval-failed",
+        });
+        if (!gate.desk) return undefined;
+        return {
+          block: true,
+          reason: `omp-remote: ${event.toolName} not approved`,
+        };
+      }
+    });
+  };
+
   if (process.env.OMP_REMOTE_MODE === "collab") {
     diagnostic({
       event: "bridge_mode_selected",
       mode: "collab-prompt-control",
     });
+    // The phone-only OMP_REMOTE_APPROVAL opt-in has no path to the phone here;
+    // the flag's gate asks through omp's dialog, which the room mirrors to it.
+    gateToolCalls({ env: undefined, viaBridge: false });
     // Collab owns the transcript, but it carries no async-job snapshot: publish
     // it here, and poll while jobs run so the phone sees them finish between
     // turns. The contained timer is cleared once nothing runs, on a re-attach,
@@ -706,7 +747,6 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
     return;
   }
 
-  const approvalGate = parseApprovalGate(process.env.OMP_REMOTE_APPROVAL);
   diagnostic({ event: "bridge_mode_selected", mode: "ipc-feed" });
 
   const attachFeed = (ctx: ExtensionContext): Promise<void> =>
@@ -782,35 +822,9 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
   };
   pi.registerTool(shadowAsk);
 
-  // Opt-in remote approval: intercept a tool BEFORE it runs and gate it on a phone
-  // answer. Our own bug must never wedge every tool, so any failure allows (the desk's
-  // native approval mode still applies). Off by default — no behaviour change unless
-  // OMP_REMOTE_APPROVAL is set.
-  pi.on("tool_call", async (event) => {
-    try {
-      // An `xd://` device call arrives twice: this outer `write` and a nested
-      // `tool_call` under the device's real name. Skip the outer one so the
-      // device is gated once, by its real name — never as a generic `write`.
-      if (parseXdevWrite(event.toolName, event.input)) return undefined;
-      if (!shouldGate(approvalGate, event.toolName)) return undefined;
-      const decision = await runToolApproval({
-        id: `approval-${randomUUID()}`,
-        tool: event.toolName,
-        input: event.input,
-        raiser: bridge,
-      });
-      if (!decision.block) return undefined;
-      return decision.reason !== undefined
-        ? { block: true, reason: decision.reason }
-        : { block: true };
-    } catch {
-      diagnostic({
-        event: "bridge_operation_failed",
-        code: "approval-failed",
-      });
-      return undefined;
-    }
-  });
+  // The phone-only OMP_REMOTE_APPROVAL opt-in and the flag's gate, asking the
+  // phone through this bridge.
+  gateToolCalls({ env: process.env.OMP_REMOTE_APPROVAL, viaBridge: true });
 
   // omp gives a message no id, but every event for one message shares its
   // `timestamp`: role + timestamp key its row (`FeedMsgIds`), the same keys the
@@ -818,6 +832,29 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
   // its own row. `streamed` is the reply row last sent and its text.
   const feedIds = new FeedMsgIds();
   let streamed: { msgId: string; text: string } | undefined;
+  // The images in `content` from the `from`-th on, under `anchor`: each its
+  // init and chunks, or its init and the error the phone shows in its place.
+  // Returns how many `content` holds.
+  const sendImages = (
+    content: unknown,
+    anchor: MediaInitFrame["anchor"],
+    from = 0,
+    name?: string,
+  ): number => {
+    const key = anchor.kind === "tool" ? anchor.callId : anchor.msgId;
+    const images = imageBlocks(content);
+    for (let i = from; i < images.length; i++) {
+      const image = images[i];
+      if (!image) continue;
+      const transfer = mediaTransfer(`${key}:${i}`, anchor, image, name);
+      if (!transfer) continue;
+      bridge?.emitMediaInit(transfer.init);
+      if (!transfer.ok)
+        bridge?.emitMediaError(transfer.init.mediaId, transfer.code);
+      else for (const chunk of transfer.chunks) bridge?.emitMediaChunk(chunk);
+    }
+    return images.length;
+  };
   pi.on(
     "message_update",
     guard((event: MessageUpdateEvent) => {
@@ -833,23 +870,12 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
         streamed = { msgId, text };
         bridge?.emitMsg({ phase, msgId, role: "assistant", text });
       }
-      const images = imagesOf(message.content);
-      if (images.length > 0) {
-        const already = mediaEmitted.get(msgId) ?? 0;
-        for (let i = already; i < images.length; i++) {
-          const image = images[i];
-          if (!image) continue;
-          const mediaId = `${msgId}:${i}`;
-          const result = chunkImage(mediaId, msgId, image);
-          if (result.ok) {
-            bridge?.emitMediaInit(result.init);
-            for (const chunk of result.chunks) bridge?.emitMediaChunk(chunk);
-          } else {
-            bridge?.emitMediaError(mediaId, result.code);
-          }
-        }
-        mediaEmitted.set(msgId, images.length);
-      }
+      const count = sendImages(
+        message.content,
+        { kind: "message", msgId },
+        mediaEmitted.get(msgId) ?? 0,
+      );
+      if (count > 0) mediaEmitted.set(msgId, count);
     }),
   );
 
@@ -858,7 +884,8 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
   // streams no update for a user message: it starts and ends it once the
   // message enters the conversation (at once when idle, a steer at the next
   // step boundary, a follow-up when its turn begins). Echo it then, so the
-  // phone confirms its send and shows prompts typed at the desk.
+  // phone confirms its send and shows prompts typed at the desk, with the
+  // photos sent along in its bubble.
   pi.on(
     "message_end",
     guard((event: MessageEndEvent) => {
@@ -871,54 +898,61 @@ export default function ompRemoteBridge(pi: ExtensionAPI): void {
         return;
       }
       if (message.role !== "user") return;
+      const msgId = feedIds.end("user", message.timestamp);
       bridge?.emitMsg({
         phase: "end",
-        msgId: feedIds.end("user", message.timestamp),
+        msgId,
         role: "user",
         text: textOf(message.content),
       });
+      sendImages(message.content, { kind: "message", msgId });
     }),
   );
 
+  // A card per tool call (`ask` shows as a question instead), named, titled
+  // and described by its start, the one event with the call's args; its end
+  // adds the head of the output and sends the images the call returned.
   pi.on(
     "tool_execution_start",
-    guard((event: unknown) => {
-      const ev = event as {
-        toolCallId?: string;
-        toolName?: string;
-        args?: unknown;
-      };
-      if (ev.toolName === "ask") return;
-      const callId = ev.toolCallId ?? "c";
-      // An `xd://` device call surfaces here only as the outer `write`; label
-      // the card with the device's real name instead of "write".
-      const xdev = parseXdevWrite(ev.toolName, ev.args);
-      if (xdev) xdevDeviceByCall.set(callId, xdev.device);
+    guard((event: ToolExecutionStartEvent) => {
+      if (event.toolName === "ask") return;
+      const card = describeToolCall(event.toolName, event.args, event.intent);
+      toolCards.set(event.toolCallId, card);
       bridge?.emitTool({
         phase: "start",
-        callId,
-        name: xdev ? xdev.device : (ev.toolName ?? "tool"),
+        callId: event.toolCallId,
+        name: card.name,
         status: "running",
-        preview: "",
+        title: card.title,
+        preview: card.argument,
       });
     }),
   );
   pi.on(
     "tool_execution_end",
-    guard((event: unknown) => {
-      const ev = event as { toolCallId?: string; toolName?: string };
-      if (ev.toolName === "ask") return;
-      const callId = ev.toolCallId ?? "c";
-      // The end event carries no args; reuse the device name recorded at start.
-      const device = xdevDeviceByCall.get(callId);
-      xdevDeviceByCall.delete(callId);
+    guard((event: ToolExecutionEndEvent) => {
+      if (event.toolName === "ask") return;
+      const { toolCallId: callId, result } = event;
+      const card = toolCards.get(callId);
+      toolCards.delete(callId);
       bridge?.emitTool({
         phase: "end",
         callId,
-        name: device ?? ev.toolName ?? "tool",
-        status: "done",
-        preview: "",
+        name: card?.name ?? event.toolName,
+        status: event.isError ? "error" : "done",
+        title: card?.title ?? "",
+        preview: toolPreview(card, result),
       });
+      // An image read from a file is named after it (a selector cut off).
+      const file = card?.file.split(/[\\/]/).pop()?.split(":")[0];
+      sendImages(
+        typeof result === "object" && result !== null && "content" in result
+          ? result.content
+          : undefined,
+        { kind: "tool", callId },
+        0,
+        file,
+      );
     }),
   );
 

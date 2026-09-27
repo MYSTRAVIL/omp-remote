@@ -89,36 +89,90 @@ export function runShadowAsk<T>(deps: {
   return promise;
 }
 
+/** A gated tool call's outcome: `block` stops it, and `reason` tells the model why. */
+export interface ApprovalDecision {
+  block: boolean;
+  reason?: string;
+}
+
 /**
- * Gate a tool call on remote approval. Remote-only by design: the desk keeps omp's own
- * approval mode, so this adds a phone-answerable gate on top (opt-in per session). With
- * no client it does not gate. A cancelled/aborted request blocks — consent was never
- * given (fail-closed). Note omp bounds a `tool_call` handler by its own timeout, so an
- * unanswered approval fails closed there too; questions (a tool `execute`) are unbounded.
+ * Gate a tool call on the user's approval, asked on the phone (`raiser`) and,
+ * with `askLocal`, at the terminal at once: the first answer wins and the other
+ * prompt is withdrawn, as in {@link runShadowAsk}. A cancel at the terminal
+ * denies. Consent is never assumed: a prompt that ends unanswered (aborted, the
+ * bridge stopped, the dialog failed) leaves the decision to the other side, and
+ * the call is blocked once neither can answer or `signal` aborts. With neither
+ * to begin with (a `task` subagent has no terminal and no phone path) it does
+ * not gate: approving the `task` call covered it, as omp's own approval does.
+ *
+ * `askLocal` is for a session whose own omp approval is off, so this gate is
+ * its only one; without it the gate is a phone prompt on top of omp's approval
+ * mode. omp bounds a `tool_call` handler by `extensionHandlers.toolCallTimeoutMs`
+ * (30 s by default) and blocks the call when it runs out, but pauses that
+ * budget while the handler awaits a `ctx.ui` dialog: with the terminal asked,
+ * an approval waits as long as the user takes; a phone-only one still fails
+ * closed at the timeout. Questions (a tool `execute`) are unbounded.
  */
-export async function runToolApproval(deps: {
+export function runToolApproval(deps: {
   id: string;
   tool: string;
   reason?: string;
   input?: unknown;
   choices?: string[];
   raiser?: InteractionRaiser;
+  /** Ask at the terminal: resolves true to approve, false to deny. */
+  askLocal?: (signal: AbortSignal) => Promise<boolean>;
   signal?: AbortSignal;
-}): Promise<{ block: boolean; reason?: string }> {
-  const { id, tool, reason, input, choices, raiser, signal } = deps;
-  if (!raiser) return { block: false };
-  const payload: InteractionPayload = {
-    kind: "approval",
-    tool,
-    choices: choices ?? ["Approve", "Deny"],
-    ...(reason !== undefined ? { reason } : {}),
-    ...(input !== undefined ? { input } : {}),
+}): Promise<ApprovalDecision> {
+  const { id, tool, reason, input, choices, raiser, askLocal, signal } = deps;
+  const allowed: ApprovalDecision = { block: false };
+  const denied: ApprovalDecision = {
+    block: true,
+    reason: `omp-remote: ${tool} denied by user`,
   };
-  const response = await raiser.raiseInteraction(id, payload, signal);
-  if (response?.kind !== "approval") {
-    return { block: true, reason: `omp-remote: ${tool} not approved` };
+  const unanswered: ApprovalDecision = {
+    block: true,
+    reason: `omp-remote: ${tool} not approved`,
+  };
+  if (!raiser && !askLocal) return Promise.resolve(allowed);
+  if (signal?.aborted) return Promise.resolve(unanswered);
+  const { promise, resolve } = Promise.withResolvers<ApprovalDecision>();
+  const local = new AbortController();
+  const remote = new AbortController();
+  let settled = false;
+  // The sides that can still answer.
+  let open = (askLocal ? 1 : 0) + (raiser ? 1 : 0);
+  const onAbort = (): void => settle(unanswered);
+  const settle = (decision: ApprovalDecision): void => {
+    if (settled) return;
+    settled = true;
+    signal?.removeEventListener("abort", onAbort);
+    local.abort();
+    remote.abort();
+    resolve(decision);
+  };
+  const lost = (): void => {
+    open -= 1;
+    if (open === 0) settle(unanswered);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  askLocal?.(local.signal).then(
+    (approved) => settle(approved ? allowed : denied),
+    lost,
+  );
+  if (raiser) {
+    const payload: InteractionPayload = {
+      kind: "approval",
+      tool,
+      choices: choices ?? ["Approve", "Deny"],
+      ...(reason !== undefined ? { reason } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(askLocal ? { terminal: true as const } : {}),
+    };
+    raiser.raiseInteraction(id, payload, remote.signal).then((response) => {
+      if (response?.kind !== "approval") lost();
+      else settle(response.decision === "deny" ? denied : allowed);
+    }, lost);
   }
-  return response.decision === "deny"
-    ? { block: true, reason: `omp-remote: ${tool} denied by user` }
-    : { block: false };
+  return promise;
 }

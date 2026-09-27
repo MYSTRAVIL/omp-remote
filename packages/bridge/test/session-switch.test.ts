@@ -122,6 +122,7 @@ function loadBridge(mode: "feed" | "collab", path: string) {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
     registerTool: noop,
+    registerFlag: noop,
     getSessionName: () => undefined,
     getThinkingLevel: () => "medium",
     getServiceTiers: () => ({}),
@@ -484,5 +485,181 @@ test("the feed finishes each reply's row, and a second reply in the same millise
     ["end", "assistant-7000", "First answer"],
     ["start", "assistant-7000-2", "Second"],
     ["end", "assistant-7000-2", "Second answer"],
+  ]);
+});
+
+test("the feed's tool cards carry a title and a body, and each end keeps them with the head of the output", async () => {
+  const ipc = await listen();
+  const omp = loadBridge("feed", ipc.path);
+  await omp.fire("session_start");
+  await ipc.next(helloFor("s1"));
+
+  await omp.fire("tool_execution_start", {
+    type: "tool_execution_start",
+    toolCallId: "c1",
+    toolName: "bash",
+    args: { command: "git status --short" },
+    intent: "Check the tree",
+  });
+  await omp.fire("tool_execution_end", {
+    type: "tool_execution_end",
+    toolCallId: "c1",
+    toolName: "bash",
+    result: { content: [text(" M a.ts")] },
+    isError: false,
+  });
+  // An `xd://` device call is the device's card from start to end, though
+  // its end carries no args; a failed call ends as an error.
+  await omp.fire("tool_execution_start", {
+    type: "tool_execution_start",
+    toolCallId: "c2",
+    toolName: "write",
+    args: { path: "xd://lsp", content: JSON.stringify({ query: "findRefs" }) },
+  });
+  await omp.fire("tool_execution_end", {
+    type: "tool_execution_end",
+    toolCallId: "c2",
+    toolName: "write",
+    result: { content: [text("no server")] },
+    isError: true,
+  });
+  await ipc.next(
+    (s) =>
+      s.frame.t === "tool" &&
+      s.frame.callId === "c2" &&
+      s.frame.phase === "end",
+  );
+
+  const card = (fields: Record<string, string>) => ({
+    t: "tool" as const,
+    sessionId: "s1",
+    phase: "start" as "start" | "update" | "end",
+    callId: "",
+    name: "",
+    status: "",
+    preview: "",
+    ...fields,
+  });
+  expect(
+    ipc.seen.flatMap((s) => (s.frame.t === "tool" ? [s.frame] : [])),
+  ).toEqual([
+    card({
+      phase: "start",
+      callId: "c1",
+      name: "bash",
+      status: "running",
+      title: "Check the tree",
+      preview: "git status --short",
+    }),
+    card({
+      phase: "end",
+      callId: "c1",
+      name: "bash",
+      status: "done",
+      title: "Check the tree",
+      preview: "git status --short\n\n M a.ts",
+    }),
+    card({
+      phase: "start",
+      callId: "c2",
+      name: "lsp",
+      status: "running",
+      title: "findRefs",
+      preview: "findRefs",
+    }),
+    card({
+      phase: "end",
+      callId: "c2",
+      name: "lsp",
+      status: "error",
+      title: "findRefs",
+      preview: "findRefs\n\nno server",
+    }),
+  ]);
+});
+
+test("photos reach the phone under what they belong to: the prompt's row, after it, and the tool's card", async () => {
+  const ipc = await listen();
+  const omp = loadBridge("feed", ipc.path);
+  await omp.fire("session_start");
+  await ipc.next(helloFor("s1"));
+
+  const photo = Buffer.from([0xff, 0xd8, 0xff, 1, 2, 3]).toString("base64");
+  const prompt = {
+    role: "user",
+    content: [
+      text("what is this?"),
+      { type: "image", data: photo, mimeType: "image/jpeg" },
+    ],
+    timestamp: 4_000,
+  };
+  await omp.fire("message_start", { type: "message_start", message: prompt });
+  await omp.fire("message_end", { type: "message_end", message: prompt });
+  const shot = Buffer.from([0x52, 0x49, 0x46, 0x46, 9]).toString("base64");
+  await omp.fire("tool_execution_start", {
+    type: "tool_execution_start",
+    toolCallId: "c1",
+    toolName: "read",
+    args: { path: "shots/screen.png:img" },
+  });
+  await omp.fire("tool_execution_end", {
+    type: "tool_execution_end",
+    toolCallId: "c1",
+    toolName: "read",
+    result: {
+      content: [
+        text("Read image file [image/webp]"),
+        { type: "image", data: shot, mimeType: "image/webp" },
+      ],
+    },
+    isError: false,
+  });
+  await ipc.next(
+    (s) => s.frame.t === "mediaChunk" && s.frame.mediaId === "c1:0",
+  );
+
+  const shown = ipc.seen.flatMap((s) =>
+    s.frame.t === "msg" ||
+    s.frame.t === "mediaInit" ||
+    s.frame.t === "mediaChunk"
+      ? [s.frame]
+      : [],
+  );
+  expect(shown).toEqual([
+    {
+      t: "msg",
+      sessionId: "s1",
+      phase: "end",
+      msgId: "user-4000",
+      role: "user",
+      text: "what is this?",
+    },
+    {
+      t: "mediaInit",
+      sessionId: "s1",
+      mediaId: "user-4000:0",
+      anchor: { kind: "message", msgId: "user-4000" },
+      mimeType: "image/jpeg",
+      size: 6,
+      totalChunks: 1,
+    },
+    {
+      t: "mediaChunk",
+      sessionId: "s1",
+      mediaId: "user-4000:0",
+      index: 0,
+      data: photo,
+    },
+    {
+      t: "mediaInit",
+      sessionId: "s1",
+      mediaId: "c1:0",
+      anchor: { kind: "tool", callId: "c1" },
+      name: "screen.png",
+      mimeType: "image/webp",
+      size: 5,
+      totalChunks: 1,
+    },
+    { t: "mediaChunk", sessionId: "s1", mediaId: "c1:0", index: 0, data: shot },
   ]);
 });

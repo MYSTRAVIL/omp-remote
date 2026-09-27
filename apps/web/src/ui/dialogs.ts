@@ -35,6 +35,16 @@ const APPROVAL_MODE_LABELS: Record<ApprovalMode, string> = {
   yolo: "Allow all tools (yolo)",
 };
 
+/** What each mode asks before, as omp's `--approval-mode` means it, and where
+ *  the question is answered. */
+const APPROVAL_MODE_HINTS: Record<ApprovalMode, string> = {
+  "always-ask":
+    "Asks before anything that edits files or runs code. Answer here or at the terminal. Applies to this session only.",
+  write:
+    "Asks before anything that runs code; file edits go ahead. Answer here or at the terminal. Applies to this session only.",
+  yolo: "Tools run without approval. Applies to this session only.",
+};
+
 /** What the About page tells people about their data, in reading order. */
 const DATA_PROTECTION: readonly { label: string; description: string }[] = [
   {
@@ -1007,9 +1017,7 @@ export class WorkspaceDialogs {
   #updateApprovalHint(): void {
     setText(
       this.#spawnApproval.hint,
-      this.#spawnApproval.value === "yolo"
-        ? "Tools run without approval. Applies to this session only."
-        : "Applies to this session only; your Settings default stays unchanged.",
+      APPROVAL_MODE_HINTS[this.#spawnApproval.value ?? "always-ask"],
     );
   }
 

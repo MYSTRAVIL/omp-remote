@@ -326,13 +326,15 @@ const pairPrompt = new PairPrompt({
   },
 });
 
-// Control frames go straight onto the machine's sealed channel; false when it
-// has none. The sign-in is the only passkey check.
-function sendControl(machineId: string, frame: ControlFrame): boolean {
-  const channel = client?.channelFor(machineId);
-  if (!channel) return false;
-  channel.sendFrame(frame);
-  return true;
+// Control frames go through the client's liveness gate (`sendControl`): sent
+// at once over a link known live, else held until an ack proves it again.
+// True once sent; false when the client could not take the frame, or dropped
+// it unsent. The sign-in is the only passkey check.
+async function sendControl(
+  machineId: string,
+  frame: ControlFrame,
+): Promise<boolean> {
+  return (await client?.sendControl(machineId, frame)) ?? false;
 }
 
 // Settings > About: this bundle's build and the builds this browser updated to.
@@ -352,27 +354,31 @@ const handlers: ControlHandlers = {
   },
   onBack: () => nav.back(),
   onOverlay: (close) => nav.overlay(close),
-  onPrompt: async (text, mode, attachments) => {
+  onPrompt: async (text, mode, attachments, images) => {
     const session = store.selectedSession();
     const machineId = store.selectedMachineId();
     if (!session || !machineId) return false;
     const clientId = randomId();
-    const sent = sendControl(machineId, {
-      t: "prompt",
-      sessionId: session.id,
-      text,
-      mode,
-      attachments,
-      clientId,
-    });
-    if (sent)
+    // Taken is enough: the echo shows the prompt waiting while the client
+    // holds it for a live link, and as not delivered if it is dropped.
+    const taken =
+      client?.sendControl(machineId, {
+        t: "prompt",
+        sessionId: session.id,
+        text,
+        mode,
+        attachments,
+        clientId,
+      }) !== undefined;
+    if (taken)
       store.addPendingPrompt(
         session.id,
         text,
         mode === "aside" ? "followUp" : mode,
         clientId,
+        images,
       );
-    return sent;
+    return taken;
   },
   onInterrupt: async () => {
     const session = store.selectedSession();
@@ -440,9 +446,13 @@ const handlers: ControlHandlers = {
   },
   onSpawn: async (machineId, opts) => {
     const spawnId = randomId();
-    const sent = sendControl(machineId, spawnFrame(machineId, opts, spawnId));
-    if (sent) beginPendingSpawn(machineId, opts.cwd, spawnId, opts.resume);
-    return sent;
+    // Taken is enough: the waiting screen fails on its own deadline if the
+    // session never registers.
+    const taken =
+      client?.sendControl(machineId, spawnFrame(machineId, opts, spawnId)) !==
+      undefined;
+    if (taken) beginPendingSpawn(machineId, opts.cwd, spawnId, opts.resume);
+    return taken;
   },
   onContinue: (sessionId) => continueSession(sessionId, handlers.onSpawn),
   // A read like `sync`: straight onto the sealed channel, no passkey check.
@@ -465,7 +475,7 @@ const handlers: ControlHandlers = {
     )
       return true;
     if (!machineId) return false;
-    const sent = sendControl(machineId, {
+    const sent = await sendControl(machineId, {
       t: "interactionReply",
       sessionId,
       id,
@@ -551,7 +561,7 @@ function connectLocal(): void {
     onSelect: (id) => nav.open(id),
     onBack: () => nav.back(),
     onOverlay: (close) => nav.overlay(close),
-    onPrompt: async (text, mode, attachments) => {
+    onPrompt: async (text, mode, attachments, images) => {
       const session = store.selectedSession();
       if (!session) return false;
       const clientId = randomId();
@@ -569,6 +579,7 @@ function connectLocal(): void {
           text,
           mode === "aside" ? "followUp" : mode,
           clientId,
+          images,
         );
       return sent;
     },

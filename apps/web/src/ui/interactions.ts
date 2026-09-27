@@ -185,7 +185,9 @@ class InteractionCard {
         element(
           "p",
           "approval-urgency",
-          "Time-sensitive. Unanswered approvals expire and block the tool.",
+          payload.terminal
+            ? "Waiting for your answer. You can also answer at the terminal."
+            : "Time-sensitive. Unanswered approvals expire and block the tool.",
         ),
         element("p", "approval-tool", payload.tool),
       );

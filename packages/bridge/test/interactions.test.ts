@@ -112,3 +112,105 @@ test("tool approval does not gate when there is no client", async () => {
   const decision = await runToolApproval({ id: "a3", tool: "bash" });
   expect(decision.block).toBe(false);
 });
+
+/** omp's terminal dialog: open until answered, or until its signal aborts
+ *  (then it resolves as a cancel, as omp's `select` resolves nothing). */
+function terminal() {
+  const answer = Promise.withResolvers<boolean>();
+  let signal: AbortSignal | undefined;
+  return {
+    askLocal: (s: AbortSignal): Promise<boolean> => {
+      signal = s;
+      s.addEventListener("abort", () => answer.resolve(false), { once: true });
+      return answer.promise;
+    },
+    answer: answer.resolve,
+    closed: (): boolean => signal?.aborted === true,
+  };
+}
+
+test("tool approval takes the terminal's answer and withdraws the phone's prompt", async () => {
+  const raiser = new FakeRaiser(undefined, { never: true });
+  const desk = terminal();
+  const pending = runToolApproval({
+    id: "a4",
+    tool: "bash",
+    raiser,
+    askLocal: desk.askLocal,
+  });
+  desk.answer(true);
+  expect(await pending).toEqual({ block: false });
+  expect(raiser.aborted).toBe(true);
+});
+
+test("tool approval takes the phone's answer and closes the terminal dialog", async () => {
+  const raiser = new FakeRaiser({ kind: "approval", decision: "deny" });
+  const desk = terminal();
+  const decision = await runToolApproval({
+    id: "a5",
+    tool: "bash",
+    raiser,
+    askLocal: desk.askLocal,
+  });
+  expect(decision).toEqual({
+    block: true,
+    reason: "omp-remote: bash denied by user",
+  });
+  expect(desk.closed()).toBe(true);
+});
+
+test("a cancel at the terminal denies the call", async () => {
+  const raiser = new FakeRaiser(undefined, { never: true });
+  const decision = await runToolApproval({
+    id: "a6",
+    tool: "bash",
+    raiser,
+    askLocal: () => Promise.resolve(false),
+  });
+  expect(decision.block).toBe(true);
+  expect(raiser.aborted).toBe(true);
+});
+
+test("a phone prompt that ends unanswered leaves the call to the terminal", async () => {
+  // The bridge stopped: the phone's prompt resolves with no answer.
+  const raiser = new FakeRaiser(undefined);
+  const desk = terminal();
+  const pending = runToolApproval({
+    id: "a7",
+    tool: "bash",
+    raiser,
+    askLocal: desk.askLocal,
+  });
+  // The phone's settled prompt is handled before this continuation runs.
+  await Promise.resolve();
+  desk.answer(true);
+  expect(await pending).toEqual({ block: false });
+});
+
+test("tool approval blocks once neither side can answer, or when the call aborts", async () => {
+  const failed = await runToolApproval({
+    id: "a8",
+    tool: "bash",
+    raiser: new FakeRaiser(undefined),
+    askLocal: () => Promise.reject(new Error("no dialog")),
+  });
+  expect(failed).toEqual({
+    block: true,
+    reason: "omp-remote: bash not approved",
+  });
+
+  const controller = new AbortController();
+  const raiser = new FakeRaiser(undefined, { never: true });
+  const desk = terminal();
+  const aborted = runToolApproval({
+    id: "a9",
+    tool: "bash",
+    raiser,
+    askLocal: desk.askLocal,
+    signal: controller.signal,
+  });
+  controller.abort();
+  expect((await aborted).block).toBe(true);
+  expect(raiser.aborted).toBe(true);
+  expect(desk.closed()).toBe(true);
+});

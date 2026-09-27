@@ -6,6 +6,7 @@ import {
 import {
   type BackoffConfig,
   BoundedQueue,
+  type ControlFrame,
   RoutedEnvelope,
   type Scheduler,
   ServerControl,
@@ -134,6 +135,22 @@ export const PHONE_BACKOFF: BackoffConfig = {
  * relay whether it still accepts the token.
  */
 const FAILED_DIALS_BEFORE_CHECK = 2;
+/**
+ * How long `sendControl` holds a control frame for a link not known live
+ * before it drops the frame unsent, ms. Several redials fit in it, and a
+ * prompt's echo shows it waiting all the while, then as not delivered.
+ */
+export const CONTROL_HOLD_MS = 60_000;
+/**
+ * The same for an interrupt, ms. Proving a half-open socket dead and
+ * redialling takes the probe's 3 s pong deadline, one dial and one hello/ack
+ * round trip: about 5 s. A Stop is about the turn on screen when it was
+ * tapped; sent much later it could stop a turn begun since (a queued
+ * follow-up), so past this it is dropped and the user, told so, decides again.
+ */
+export const INTERRUPT_HOLD_MS = 10_000;
+/** Control frames held per machine; `sendControl` refuses more. */
+const MAX_HELD_CONTROLS = 32;
 
 function toU8(data: unknown): Uint8Array {
   if (typeof data === "string") return enc.encode(data);
@@ -164,6 +181,15 @@ class RouteSink implements ByteSink {
   deliver(raw: string): void {
     this.#onBytes?.(enc.encode(raw));
   }
+}
+
+/** A control frame `sendControl` holds until its machine's link is proven live. */
+interface HeldControl {
+  frame: ControlFrame;
+  /** From this `now` on, the frame is dropped unsent. */
+  expiresAt: number;
+  /** Settles `sendControl`'s promise: true once sent, false once dropped. */
+  settle: (sent: boolean) => void;
 }
 
 /** The production `ClientSocket`: the browser `WebSocket` to the aggregator `/client`. */
@@ -201,6 +227,9 @@ export function browserSocket(url: string): ClientSocket {
  * meanwhile wait in a bounded drop-oldest queue, and an idle keepalive ping
  * holds the connection open (spec §4.1/§9).
  * A ping no line answers in time marks the socket half-open, so it is redialled.
+ * Control frames (`sendControl`) go out only over a link known live; else
+ * each machine holds them, unsealed, until an ack proves the link again, and
+ * drops the ones held too long.
  * The sign-in ends, and the client stops for good, when the relay closes it as
  * signed out, when the session token runs out, or when the relay says it no
  * longer accepts the token after dials that never open.
@@ -254,6 +283,14 @@ export class PhoneClient {
   #cancelProbe: (() => void) | undefined;
   /** When the current dial began, by `now`; see `probe()`. */
   #dialStartedAt = 0;
+  /** When the current socket last gave a line (or opened), by `now`; see `#silent`. */
+  #lastLineAt = 0;
+  /** Control frames held per machine, oldest first; see `sendControl`. */
+  readonly #held = new Map<string, HeldControl[]>();
+  /** Machines a hold said hello to on this socket that have not acked since. */
+  readonly #asked = new Set<string>();
+  /** The timer for the next held frame to go stale; armed only while one is held. */
+  #cancelExpiry: (() => void) | undefined;
 
   constructor(
     factory: () => ClientSocket,
@@ -308,6 +345,10 @@ export class PhoneClient {
       // that answers it.
       channel.onReady((peerEpoch) => {
         this.#store.markPaired(machine.machineId);
+        // The ack proved this socket and the agent's epoch live: what was held
+        // for the machine goes now, sealed to that epoch, ahead of any sync,
+        // so the replay answering that sync knows every prompt held for it.
+        this.#flushHeld(machine.machineId, channel);
         if (this.#synced.get(machine.machineId) === peerEpoch) return;
         this.#synced.set(machine.machineId, peerEpoch);
         const id = randomId();
@@ -323,9 +364,60 @@ export class PhoneClient {
     this.#connect();
   }
 
-  /** The sealed channel for a machine, for later control frames (prompt/interrupt). */
+  /**
+   * The sealed channel for a machine, for frames that need no live link
+   * (reads, uploads); control frames go through `sendControl`.
+   */
   channelFor(machineId: string): SealedChannel | undefined {
     return this.#channels.get(machineId);
+  }
+
+  /**
+   * Send a control frame (a prompt, an interrupt, …) to a machine, only over a
+   * link known live. A half-open socket (a frozen tab's, which the relay
+   * idle-closed unseen) takes bytes and loses them without an error. So a
+   * frame goes at once only while an ack on this socket has verified the
+   * machine's agent, a line came within the keepalive interval plus the pong
+   * deadline, no resume probe doubts the socket, and nothing is held for that
+   * machine. Else it is held, in order, while the link is checked (`probe()`:
+   * a redial, or a ping answered in time) and the agent is asked for an ack.
+   * The next ack sends the hold, sealed to the agent epoch it verified (a
+   * restarted agent's new one), ahead of the sync it may pull. The host acts on
+   * every copy it gets, so each frame goes once. One held past its time
+   * (`INTERRUPT_HOLD_MS` for an interrupt, else `CONTROL_HOLD_MS`) is dropped
+   * unsent, and a dropped prompt's echo shows as not delivered.
+   *
+   * Undefined when the frame cannot be taken: the machine has no channel here
+   * (not paired, or the client stopped), or its hold is full. Else a promise:
+   * true once the frame is sent over a live link, false if it was dropped.
+   */
+  sendControl(
+    machineId: string,
+    frame: ControlFrame,
+  ): Promise<boolean> | undefined {
+    const channel = this.#channels.get(machineId);
+    if (channel === undefined) return undefined;
+    const held = this.#held.get(machineId);
+    if (held === undefined && this.#linkLive(machineId)) {
+      channel.sendFrame(frame);
+      return Promise.resolve(true);
+    }
+    if (held !== undefined && held.length >= MAX_HELD_CONTROLS)
+      return undefined;
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    const holdMs =
+      frame.t === "interrupt" ? INTERRUPT_HOLD_MS : CONTROL_HOLD_MS;
+    const entry: HeldControl = {
+      frame,
+      expiresAt: this.#now() + holdMs,
+      settle: resolve,
+    };
+    if (held === undefined) this.#held.set(machineId, [entry]);
+    else held.push(entry);
+    this.#armExpiry();
+    this.#checkLink(machineId, channel);
+    // A redial finding the token run out ends the sign-in: nothing was taken.
+    return this.#stopped ? undefined : promise;
   }
 
   /**
@@ -366,7 +458,13 @@ export class PhoneClient {
     for (const ch of this.#channels.values()) ch.close();
     this.#channels.clear();
     this.#sinks.clear();
+    // Nothing held can be sent any more.
+    const held = [...this.#held.values()].flat();
+    this.#held.clear();
+    this.#asked.clear();
+    this.#armExpiry();
     this.#relayChanged();
+    for (const entry of held) this.#drop(entry);
   }
 
   /**
@@ -394,7 +492,8 @@ export class PhoneClient {
    * kept if the relay's pong comes back within `probeTimeoutMs`; else it is
    * redialled as `wake()` does. Only a pong counts: lines the browser queued
    * while the tab was frozen prove nothing about the socket now. Until the
-   * pong, every machine's list shows as syncing (`AppStore.doubtLists`).
+   * pong, every machine's list shows as syncing (`AppStore.doubtLists`). A
+   * control frame held on a silent socket, or a link that is down, runs it too.
    */
   probe(): void {
     if (this.#stopped) return;
@@ -464,6 +563,7 @@ export class PhoneClient {
     socket.onMessage((raw) => {
       if (gen !== this.#generation) return;
       // Any line proves the socket alive, not just the pong.
+      this.#lastLineAt = this.#now();
       this.#disarmPong();
       this.#onMessage(raw);
     });
@@ -477,9 +577,112 @@ export class PhoneClient {
     else this.#outbound.push(raw);
   }
 
+  /**
+   * A frame sent to `machineId` now would reach its agent: an ack on this
+   * socket verified the agent, no resume probe doubts the socket, and it is
+   * not silent.
+   */
+  #linkLive(machineId: string): boolean {
+    return (
+      this.channelReady(machineId) &&
+      this.#cancelProbe === undefined &&
+      !this.#silent()
+    );
+  }
+
+  /**
+   * No line for longer than a keepalive interval plus the pong deadline, when
+   * a keepalive's pong would have come: the tab was frozen, or the socket is
+   * half-open. With no keepalive, silence proves nothing.
+   */
+  #silent(): boolean {
+    return (
+      this.#keepaliveMs > 0 &&
+      this.#now() - this.#lastLineAt > this.#keepaliveMs + this.#pongTimeoutMs
+    );
+  }
+
+  /**
+   * Get the link proven for a frame just held for `machineId`: one that is
+   * down, or a socket gone silent, is checked as on resume (`probe()`), and
+   * an open socket asks the agent for the ack that sends the hold, once until
+   * it comes. A socket that opens says hello on every channel itself.
+   */
+  #checkLink(machineId: string, channel: SealedChannel): void {
+    if (!this.#connected || this.#silent()) this.probe();
+    if (!this.#connected || this.#asked.has(machineId)) return;
+    this.#asked.add(machineId);
+    channel.hello();
+  }
+
+  /**
+   * An ack on this socket verified `machineId`'s agent: send what was held
+   * for it, in order, each once. A frame past its time is dropped instead: a
+   * frozen tab runs no timer, so the ack can come after the deadline.
+   */
+  #flushHeld(machineId: string, channel: SealedChannel): void {
+    this.#asked.delete(machineId);
+    const held = this.#held.get(machineId);
+    if (held === undefined) return;
+    this.#held.delete(machineId);
+    this.#armExpiry();
+    const now = this.#now();
+    const stale: HeldControl[] = [];
+    for (const entry of held) {
+      if (now >= entry.expiresAt) {
+        stale.push(entry);
+        continue;
+      }
+      channel.sendFrame(entry.frame);
+      entry.settle(true);
+    }
+    for (const entry of stale) this.#drop(entry);
+  }
+
+  /** Keep one timer for the next held frame to go stale; none while none is held. */
+  #armExpiry(): void {
+    this.#cancelExpiry?.();
+    this.#cancelExpiry = undefined;
+    let next = Number.POSITIVE_INFINITY;
+    for (const held of this.#held.values())
+      for (const entry of held) next = Math.min(next, entry.expiresAt);
+    if (next === Number.POSITIVE_INFINITY) return;
+    const delay = Math.max(0, next - this.#now());
+    this.#cancelExpiry = this.#scheduler.setTimer(() => {
+      this.#cancelExpiry = undefined;
+      this.#expireHeld();
+    }, delay);
+  }
+
+  /** Drop every held frame past its time; the rest keep their order. */
+  #expireHeld(): void {
+    const now = this.#now();
+    const stale: HeldControl[] = [];
+    for (const [machineId, held] of this.#held) {
+      const kept: HeldControl[] = [];
+      for (const entry of held) {
+        if (now < entry.expiresAt) kept.push(entry);
+        else stale.push(entry);
+      }
+      if (kept.length === 0) this.#held.delete(machineId);
+      else this.#held.set(machineId, kept);
+    }
+    this.#armExpiry();
+    for (const entry of stale) this.#drop(entry);
+  }
+
+  /** A held frame will never be sent: settle it so, and fail a prompt's echo. */
+  #drop(entry: HeldControl): void {
+    entry.settle(false);
+    if (entry.frame.t === "prompt" && entry.frame.clientId !== undefined)
+      this.#store.failPrompt(entry.frame.clientId);
+  }
+
   #onOpen(gen: number): void {
     if (this.#stopped || gen !== this.#generation) return;
     this.#connected = true;
+    // An open proves the socket live, as a line does.
+    this.#lastLineAt = this.#now();
     this.#disarmDial();
     // The relay took the token: a later run of failed dials counts from zero.
     this.#endStreak();
@@ -499,7 +702,8 @@ export class PhoneClient {
     // channel: the agent's ack triggers the sync that restores full state. A
     // buffered frame was sealed to the agent epoch its channel had verified; if
     // that agent restarted meanwhile, the new one drops it (an accepted loss),
-    // and its first broadcast makes the channel handshake again.
+    // and its first broadcast makes the channel handshake again. Control frames
+    // never wait here: they are held unsealed until an ack (see `sendControl`).
     for (const machine of this.#machines)
       socket.send(
         JSON.stringify({ type: "attach", machineId: machine.machineId }),
@@ -507,6 +711,7 @@ export class PhoneClient {
     for (const raw of this.#outbound.drain()) socket.send(raw);
     // A new socket may have missed broadcasts: the next ack syncs again.
     this.#synced.clear();
+    this.#asked.clear();
     for (const machine of this.#machines)
       this.#channels.get(machine.machineId)?.hello();
     this.#startKeepalive();
@@ -630,10 +835,19 @@ export class PhoneClient {
     const msg = parsed.data;
     // The aggregator lists every live agent; show only the machines paired
     // here, so one forgotten on this device stays out of the tree.
-    if (msg.type === "machines")
+    if (msg.type === "machines") {
       this.#store.setMachineList(
         msg.machineIds.filter((machineId) => this.#paired.has(machineId)),
       );
+      // The relay drops lines to a route with no agent, so the hello a hold
+      // asked with may be lost: ask a listed machine holding frames again.
+      for (const machineId of msg.machineIds) {
+        const channel = this.#channels.get(machineId);
+        if (channel === undefined || !this.#held.has(machineId)) continue;
+        this.#asked.add(machineId);
+        channel.hello();
+      }
+    }
     // A pong answers a resume probe: the link stayed up, so the lists are
     // current. It also disarmed the keepalive deadline, as any line does.
     // "error" is surfaced by the shell.

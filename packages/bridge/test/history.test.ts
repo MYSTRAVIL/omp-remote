@@ -17,16 +17,28 @@ const assistant = (timestamp: number, ...content: unknown[]) =>
     type: "message",
     message: { role: "assistant", content, timestamp },
   });
-const answered = (toolCallId: string) =>
+const answered = (toolCallId: string, text = "", isError = false) =>
   entry({
     type: "message",
-    message: { role: "toolResult", toolCallId, content: [], timestamp: 0 },
+    message: {
+      role: "toolResult",
+      toolCallId,
+      content: [{ type: "text", text }],
+      isError,
+      timestamp: 0,
+    },
   });
-const call = (id: string, name: string, args: unknown = {}) => ({
+const call = (
+  id: string,
+  name: string,
+  args: unknown = {},
+  intent?: string,
+) => ({
   type: "toolCall",
   id,
   name,
   arguments: args,
+  ...(intent === undefined ? {} : { intent }),
 });
 
 test("the branch comes back as the live feed showed it", () => {
@@ -36,14 +48,22 @@ test("the branch comes back as the live feed showed it", () => {
       2_000,
       { type: "thinking", thinking: "Where is it?" },
       { type: "text", text: "Reading it first." },
-      call("c1", "read", { path: "a.test.ts" }),
+      call("c1", "read", { path: "a.test.ts" }, "Read the test"),
+      call("c4", "bash", { command: "bun test a.test.ts" }),
       // The question surfaces as an interaction, never as a card.
       call("c2", "ask"),
     ),
-    answered("c1"),
+    answered("c1", "1: test('flaky', ...)"),
+    answered("c4", "1 fail", true),
     entry({ type: "model_change", model: "p/other" }),
     // A tool-call-only message is no row; its device call still runs.
-    assistant(3_000, call("c3", "write", { path: "xd://lsp", content: "{}" })),
+    assistant(
+      3_000,
+      call("c3", "write", {
+        path: "xd://lsp",
+        content: JSON.stringify({ query: "findRefs" }),
+      }),
+    ),
   ]);
 
   expect(frames).toEqual([
@@ -72,7 +92,18 @@ test("the branch comes back as the live feed showed it", () => {
       callId: "c1",
       name: "read",
       status: "done",
-      preview: "",
+      title: "Read the test",
+      preview: "a.test.ts\n\n1: test('flaky', ...)",
+    },
+    {
+      t: "tool",
+      sessionId: "s1",
+      phase: "end",
+      callId: "c4",
+      name: "bash",
+      status: "error",
+      title: "bun test a.test.ts",
+      preview: "bun test a.test.ts\n\n1 fail",
     },
     {
       t: "tool",
@@ -81,7 +112,8 @@ test("the branch comes back as the live feed showed it", () => {
       callId: "c3",
       name: "lsp",
       status: "running",
-      preview: "",
+      title: "findRefs",
+      preview: "findRefs",
     },
   ]);
 });
@@ -101,4 +133,24 @@ test("only the newest rows since the last /clear go back, within the text budget
     user("x".repeat(300 * 1024), 3),
   ]).map((f) => (f.t === "msg" ? f.at : f.t));
   expect(times).toEqual([3]);
+});
+
+test("tool cards' titles and bodies count against the text budget", () => {
+  // 200 calls, each answered with more output than a card body holds.
+  const calls = Array.from({ length: 200 }, (_, i) =>
+    call(`c${i}`, "bash", { command: `step ${i}` }),
+  );
+  const frames = historyFrames("s1", [
+    assistant(1, ...calls),
+    ...calls.map((c) => answered(c.id, "o".repeat(4096))),
+  ]);
+  const bytes = frames.reduce(
+    (sum, f) =>
+      sum + (f.t === "tool" ? Buffer.byteLength(`${f.title}${f.preview}`) : 0),
+    0,
+  );
+  expect(bytes).toBeLessThanOrEqual(256 * 1024);
+  expect(frames.length).toBeLessThan(200);
+  // The newest cards are the ones kept.
+  expect(frames.at(-1)).toMatchObject({ callId: "c199", phase: "end" });
 });

@@ -26,7 +26,7 @@ import type { SignInPreferences } from "../core/sign-in-preferences";
 import type { SpawnOptions } from "../core/spawn-frame";
 import type { PendingSpawn } from "../core/store";
 import type { SessionCatalog } from "../core/store";
-import type { TranscriptState } from "../core/transcript";
+import type { SentImage, TranscriptState } from "../core/transcript";
 import type { UpdateRecord } from "../core/update-policy";
 import { ConnectionStatusView } from "./connection-status";
 import { SessionView } from "./conversation";
@@ -86,10 +86,13 @@ export interface AccountControls {
 
 /** Main captures control targets synchronously and routes mutations through fresh UV. */
 export interface ControlHandlers extends TreeHandlers {
+  /** Send a prompt; `images` are the attached photos' own copies, for its
+   *  echo to show them at once. */
   onPrompt(
     text: string,
     mode: "steer" | "followUp" | "aside",
     attachments?: string[],
+    images?: readonly SentImage[],
   ): Promise<boolean>;
   onInterrupt(): Promise<boolean>;
   onServiceTier(sessionId: string, enabled: boolean): Promise<boolean>;

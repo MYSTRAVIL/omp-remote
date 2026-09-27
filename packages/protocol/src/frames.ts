@@ -79,9 +79,11 @@ export const ToolFrame = z.object({
   callId: z.string(),
   name: z.string(),
   status: z.string(),
+  /** The card body (`toolPreview`): the call's key argument, then, once it
+   *  has output, the head of it; bounded by `TOOL_PREVIEW_MAX`. */
   preview: z.string(),
   /** A stable one-line summary of the call (intent or key argument) for the
-   *  card header; distinct from the evolving `preview` (args -> result). */
+   *  card header; distinct from the evolving `preview`. */
   title: z.string().optional(),
 });
 /** One background async job (task subagent, bash, eval) as surfaced to the phone. */
@@ -222,12 +224,22 @@ export const CloseSessionFrame = z.object({
   sessionId: z.string(),
 });
 /**
- * Approval mode a phone-spawned session launches with (spec §8 v1). These are
- * exactly the values omp's `--approval-mode` CLI flag accepts. An adopted TUI
- * session keeps answering approvals at the desk; only spawned sessions carry a
- * mode chosen here.
+ * Approval mode a phone-spawned session launches with (spec §8 v1), meaning
+ * what omp's `--approval-mode` makes of it: `always-ask` asks before a tool
+ * that writes or runs code, `write` before one that runs code, `yolo` never.
+ * An adopted TUI session keeps its own mode; only spawned sessions carry one
+ * chosen here. A Collab session gets omp's own prompt, which omp mirrors to the
+ * phone; any other gets the bridge's gate ({@link REMOTE_APPROVAL_FLAG}), which
+ * asks at the terminal and on the phone at once.
  */
 export const ApprovalMode = z.enum(["always-ask", "write", "yolo"]);
+/**
+ * The omp CLI flag, without its dashes, that the bridge registers: the
+ * host-agent passes `--omp-remote-approval=<mode>` to a session it spawns with
+ * omp's own approval off, and the bridge asks as omp's `<mode>` would. An omp
+ * without the bridge refuses the unknown flag rather than run unapproved.
+ */
+export const REMOTE_APPROVAL_FLAG = "omp-remote-approval";
 /** The levels omp's `--thinking` CLI flag accepts (omp 18.2.11). */
 export const SpawnThinkingLevel = z.enum([
   "off",
@@ -452,6 +464,10 @@ export const InteractionFrame = z.object({
       reason: z.string().optional(),
       input: z.unknown().optional(),
       choices: z.array(z.string()).min(1),
+      /** The terminal asks the same approval and the first answer wins; it
+       *  waits for one. Absent: asked on the phone only, and omp blocks the
+       *  tool when nobody answers in time. Absent from older bridges. */
+      terminal: z.literal(true).optional(),
     }),
   ]),
 });
@@ -653,8 +669,8 @@ export const ResourceErrorFrame = z.object({
 /**
  * Host → phone image transfer. Integrity comes from the sealed E2E channel, so —
  * unlike the phone→host `resource*` upload frames — no per-transfer hash is carried.
- * `anchor` attaches the image to its transcript entry: a tool call's result (collab
- * path) or an assistant message (IPC path). Chunk sizing mirrors the upload path.
+ * `anchor` attaches the image to its transcript entry: a tool call's result, or a
+ * user or assistant message. Chunk sizing mirrors the upload path.
  */
 export const MediaAnchor = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("tool"), callId: z.string() }),

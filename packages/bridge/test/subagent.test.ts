@@ -95,6 +95,7 @@ function loadBridge(session: OmpSession) {
       handlers.set(name, [...(handlers.get(name) ?? []), handler]);
     },
     registerTool: noop,
+    registerFlag: noop,
     getSessionName: () => undefined,
     getThinkingLevel: () => "medium",
     getServiceTiers: () => ({}),

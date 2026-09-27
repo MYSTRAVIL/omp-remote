@@ -856,6 +856,67 @@ test("media frames route through applyFrame to the tool card", () => {
   expect(media?.dataUrl).toBe(`data:image/png;base64,${raw}`);
 });
 
+test("a photo sent with a prompt shows in its echo at once, and the host's copy takes it over instead of adding a second", () => {
+  const store = new AppStore();
+  store.setMachineList(["m1"]);
+  store.applyFrame("m1", sessions([meta({ id: "a" })]));
+  const own = { url: "blob:own", name: "IMG_1.jpg", mimeType: "image/jpeg" };
+  store.addPendingPrompt("a", "what is this?", "steer", "c1", [
+    { ...own, size: 4 },
+  ]);
+  const bubble = () => {
+    const entries = store.transcriptFor("a")?.entries ?? [];
+    expect(entries).toHaveLength(1);
+    return entries[0]?.kind === "message" ? entries[0] : undefined;
+  };
+  expect(bubble()?.media).toEqual([
+    expect.objectContaining({ status: "ready", dataUrl: "blob:own" }),
+  ]);
+  store.applyFrame("m1", {
+    t: "msg",
+    sessionId: "a",
+    phase: "end",
+    msgId: "user-9",
+    role: "user",
+    text: "what is this?",
+    clientId: "c1",
+  });
+  const announce = {
+    t: "mediaInit" as const,
+    sessionId: "a",
+    mediaId: "user-9:0",
+    anchor: { kind: "message" as const, msgId: "user-9" },
+    mimeType: "image/jpeg",
+    size: 4,
+    totalChunks: 1,
+  };
+  store.applyFrame("m1", announce);
+  store.applyFrame("m1", {
+    t: "mediaChunk",
+    sessionId: "a",
+    mediaId: "user-9:0",
+    index: 0,
+    data: "AAAAAA==",
+  });
+  // A replay's deferred re-announcement, or an error, changes nothing.
+  store.applyFrame("m1", { ...announce, deferred: true });
+  store.applyFrame("m1", {
+    t: "mediaError",
+    sessionId: "a",
+    mediaId: "user-9:0",
+    code: "internal",
+  });
+  expect(bubble()?.msgId).toBe("user-9");
+  expect(bubble()?.media).toEqual([
+    expect.objectContaining({
+      mediaId: "user-9:0",
+      status: "ready",
+      dataUrl: "blob:own",
+    }),
+  ]);
+  expect(store.claimMediaFetch("a", "user-9:0")).toBe(false);
+});
+
 test("a machine's catalog is cached from any of its sessions, kept across reloads, and dropped on forget", () => {
   const storage = memoryStorage();
   const store = new AppStore(Date.now, new MachineCatalogs(storage));

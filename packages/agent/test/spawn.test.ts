@@ -38,34 +38,42 @@ function recordingLauncher() {
   return { launched, launch };
 }
 
-test("spawnArgs passes --model and --approval-mode", () => {
-  expect(spawnArgs({ model: "opus", approvalMode: "yolo" })).toEqual([
+test("spawnArgs passes --model, --thinking and a yolo --approval-mode", () => {
+  expect(spawnArgs({ model: "opus", approvalMode: "yolo" }, {})).toEqual([
     "--model",
     "opus",
     "--approval-mode",
     "yolo",
   ]);
-});
-
-test("spawnArgs includes --thinking when thinkingLevel is set", () => {
-  expect(
-    spawnArgs({ model: "opus", thinkingLevel: "high", approvalMode: "write" }),
-  ).toEqual([
+  expect(spawnArgs({ model: "opus", thinkingLevel: "high" }, {})).toEqual([
     "--model",
     "opus",
     "--thinking",
     "high",
-    "--approval-mode",
-    "write",
   ]);
+  expect(spawnArgs({}, {})).toEqual([]);
 });
 
-test("spawnArgs omits flags that are not set", () => {
-  expect(spawnArgs({})).toEqual([]);
-  expect(spawnArgs({ approvalMode: "write" })).toEqual([
+test("an asking mode turns omp's own prompt off and the bridge's gate on", () => {
+  // omp's own prompt shows only in the terminal; the bridge asks there and on
+  // the phone at once, as omp's mode means it.
+  expect(spawnArgs({ approvalMode: "always-ask" }, {})).toEqual([
     "--approval-mode",
-    "write",
+    "yolo",
+    "--omp-remote-approval=always-ask",
   ]);
+  expect(spawnArgs({ approvalMode: "write" }, { OMP_REMOTE_MODE: "" })).toEqual(
+    ["--approval-mode", "yolo", "--omp-remote-approval=write"],
+  );
+});
+
+test("a Collab session keeps omp's own prompt, which the room brings to the phone", () => {
+  const collab = { OMP_REMOTE_MODE: "collab" };
+  for (const mode of ["always-ask", "write", "yolo"] as const)
+    expect(spawnArgs({ approvalMode: mode }, collab)).toEqual([
+      "--approval-mode",
+      mode,
+    ]);
 });
 
 test("spawnArgs refuses a model that could break out of the launch command", () => {
@@ -79,7 +87,7 @@ test("spawnArgs refuses a model that could break out of the launch command", () 
     "a\nb",
     "a".repeat(129),
   ])
-    expect(() => spawnArgs({ model })).toThrow();
+    expect(() => spawnArgs({ model }, {})).toThrow();
 });
 
 test("spawnArgs passes realistic omp model ids through verbatim", () => {
@@ -93,33 +101,24 @@ test("spawnArgs passes realistic omp model ids through verbatim", () => {
     "@worker",
     "a".repeat(128),
   ])
-    expect(spawnArgs({ model })).toEqual(["--model", model]);
+    expect(spawnArgs({ model }, {})).toEqual(["--model", model]);
 });
 
 test("spawnArgs resumes a stored session and drops the model omp restores itself", () => {
   const resume = "01a0d583-7bf6-7189-8598-2108d0d52a01";
   expect(
-    spawnArgs({
-      resume,
-      model: "opus",
-      thinkingLevel: "high",
-      approvalMode: "write",
-    }),
-  ).toEqual([
+    spawnArgs({ resume, model: "opus", thinkingLevel: "high" }, {}),
+  ).toEqual(["--resume", resume, "--thinking", "high"]);
+  // The ignored model is not validated either: it never reaches the argv.
+  expect(spawnArgs({ resume, model: "x&calc" }, {})).toEqual([
     "--resume",
     resume,
-    "--thinking",
-    "high",
-    "--approval-mode",
-    "write",
   ]);
-  // The ignored model is not validated either: it never reaches the argv.
-  expect(spawnArgs({ resume, model: "x&calc" })).toEqual(["--resume", resume]);
 });
 
 test("spawnArgs refuses a resume id outside the stored-session charset", () => {
   for (const resume of ["--help", "abc&calc", "ABCDEF12-0000", "a\nbcdefgh"])
-    expect(() => spawnArgs({ resume })).toThrow();
+    expect(() => spawnArgs({ resume }, {})).toThrow();
 });
 
 test("a win32 cwd must be a drive-letter path, without quotes or control characters", () => {
@@ -267,6 +266,54 @@ test("linux launches the alternatives terminal with omp", () => {
   });
 });
 
+test("every approval mode reaches omp through Windows Terminal verbatim", () => {
+  const omp = "C:\\Users\\me\\AppData\\Local\\omp\\omp.exe";
+  for (const env of [{}, { OMP_REMOTE_MODE: "collab" }])
+    for (const approvalMode of ["always-ask", "write", "yolo"] as const) {
+      const ompArgs = spawnArgs({ approvalMode }, env);
+      expect(terminalCommand("win32", omp, ompArgs, "C:\\p", WT)).toEqual({
+        command: WT,
+        args: ["-w", "new", "new-tab", "-d", ".", "--", omp, ...ompArgs],
+      });
+    }
+});
+
+test("spawnSession opens a Linux terminal with the approval flags of each mode", async () => {
+  const { launched, launch } = recordingLauncher();
+  const collab = { OMP_REMOTE_MODE: "collab" };
+  // `/` is a directory on every host, so this runs on Windows too.
+  for (const [approvalMode, env] of [
+    ["always-ask", {}],
+    ["write", {}],
+    ["yolo", {}],
+    ["always-ask", collab],
+    ["write", collab],
+  ] as const)
+    await spawnSession({
+      cwd: "/",
+      platform: "linux",
+      approvalMode,
+      env,
+      spawnId: "nonce-2",
+      launch,
+    });
+  expect(launched.map(({ command }) => command)).toEqual(
+    [
+      ["--approval-mode", "yolo", "--omp-remote-approval=always-ask"],
+      ["--approval-mode", "yolo", "--omp-remote-approval=write"],
+      ["--approval-mode", "yolo"],
+      ["--approval-mode", "always-ask"],
+      ["--approval-mode", "write"],
+    ].map((flags) => ({
+      command: "x-terminal-emulator",
+      args: ["-e", "omp", ...flags],
+    })),
+  );
+  expect(launched.map(({ spawnId }) => spawnId)).toEqual(
+    Array(5).fill("nonce-2"),
+  );
+});
+
 test("spawnSession refuses a cwd that is not an existing directory, launching nothing", async () => {
   const { launched, launch } = recordingLauncher();
   const root = mkdtempSync(join(tmpdir(), "omp-remote-spawn-"));
@@ -324,6 +371,7 @@ test.skipIf(process.platform !== "win32")(
       spawnId: "nonce-1",
       ompBin: process.execPath,
       windowsTerminal: WT,
+      env: {},
       launch,
     });
     expect(launched).toEqual([
@@ -343,7 +391,8 @@ test.skipIf(process.platform !== "win32")(
             "--thinking",
             "high",
             "--approval-mode",
-            "write",
+            "yolo",
+            "--omp-remote-approval=write",
           ],
         },
         cwd,

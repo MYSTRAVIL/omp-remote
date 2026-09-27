@@ -5,9 +5,16 @@ import {
   newIdentity,
   serverSessionKeys,
 } from "@omp-remote/crypto";
-import type { Scheduler, SealedFrame, SessionMeta } from "@omp-remote/protocol";
+import type {
+  ControlFrame,
+  Scheduler,
+  SealedFrame,
+  SessionMeta,
+} from "@omp-remote/protocol";
 import {
+  CONTROL_HOLD_MS,
   type ClientSocket,
+  INTERRUPT_HOLD_MS,
   PhoneClient,
   type PhoneClientOptions,
   type RelayState,
@@ -539,6 +546,9 @@ interface Harness {
   sockets: FakeSocket[];
   signedOut: SignOutReason[];
   reported: RelayState[];
+  store: AppStore;
+  /** The paired machine's side of the keys, for its `FakeAgent`. */
+  agentKeys: SessionKeys;
 }
 
 /**
@@ -546,11 +556,12 @@ interface Harness {
  * on a `FakeScheduler` with a keepalive; `opts` override the defaults.
  */
 async function harness(opts: PhoneClientOptions = {}): Promise<Harness> {
-  const { phone } = await pair();
+  const { phone, agent } = await pair();
   const sched = new FakeScheduler();
   const sockets: FakeSocket[] = [];
   const signedOut: SignOutReason[] = [];
   const reported: RelayState[] = [];
+  const store = new AppStore();
   const client = new PhoneClient(
     () => {
       const s = new FakeSocket();
@@ -558,7 +569,7 @@ async function harness(opts: PhoneClientOptions = {}): Promise<Harness> {
       return s;
     },
     [{ machineId: "m1", keys: phone }],
-    new AppStore(),
+    store,
     {
       scheduler: sched,
       keepaliveMs: 1000,
@@ -568,7 +579,15 @@ async function harness(opts: PhoneClientOptions = {}): Promise<Harness> {
       ...opts,
     },
   );
-  return { client, sched, sockets, signedOut, reported };
+  return {
+    client,
+    sched,
+    sockets,
+    signedOut,
+    reported,
+    store,
+    agentKeys: agent,
+  };
 }
 
 /** The relay refuses the next dial's upgrade: the socket closes, never opens. */
@@ -976,4 +995,189 @@ test("wake() starts the backoff over, so a retry after it waits the shortest del
   h.client.wake();
   h.sockets.at(-1)?.fireClose();
   expect(delays.at(-1)).toBe(50);
+});
+
+/** A clock the test moves by hand; the client reads it as `now`. */
+interface Clock {
+  now: number;
+}
+
+/** A harness whose first socket is open and acked by the machine's agent. */
+interface Acked extends Harness {
+  agent: FakeAgent;
+  first: FakeSocket;
+}
+
+/** `harness` on `clock`, its first socket open and acked by the agent. */
+async function acked(clock: Clock): Promise<Acked> {
+  const h = await harness({ now: () => clock.now });
+  const agent = new FakeAgent(h.agentKeys, "m1");
+  h.client.start();
+  const first = h.sockets[0];
+  if (!first) throw new Error("no socket dialled");
+  first.fireOpen();
+  agent.connect(first);
+  agent.relay();
+  return { ...h, agent, first };
+}
+
+/** Each line's kind: a sealed envelope's (`h` hello, `d` frame), else a clear control's type. */
+function kinds(lines: readonly string[]): string[] {
+  return lines.map((raw) => {
+    const j: unknown = JSON.parse(raw);
+    if (typeof j !== "object" || j === null) return "?";
+    if ("k" in j) return String(j.k);
+    return "type" in j ? String(j.type) : "?";
+  });
+}
+
+/** The sync an ack pulls, whatever its id. */
+const SYNC: SealedFrame = { t: "sync", id: expect.any(String) };
+const steer: ControlFrame = {
+  t: "prompt",
+  sessionId: "s1",
+  text: "check the tests first",
+  mode: "steer",
+  clientId: "c1",
+};
+const followUp: ControlFrame = {
+  t: "prompt",
+  sessionId: "s1",
+  text: "then commit",
+  mode: "followUp",
+  clientId: "c2",
+};
+const stop: ControlFrame = { t: "interrupt", sessionId: "s1" };
+
+test("over a live link a control frame goes at once", async () => {
+  const clock = { now: 0 };
+  const h = await acked(clock);
+  // Well within a keepalive interval plus the pong deadline of the ack.
+  clock.now += 5_000;
+  const before = h.first.sent.length;
+  const delivery = h.client.sendControl("m1", steer);
+  // On the wire at once: the sealed steer, and no hello asking for an ack.
+  expect(kinds(h.first.sent.slice(before))).toEqual(["d"]);
+  expect(await delivery).toBe(true);
+  h.agent.relay();
+  expect(h.agent.frames).toEqual([SYNC, steer]);
+});
+
+test("a steer sent on a socket gone silent is held, then sent once, after the redial's ack, to the agent epoch it verified", async () => {
+  const clock = { now: 0 };
+  const h = await acked(clock);
+  // The tab froze past a keepalive and its pong deadline, so the relay may
+  // have closed the socket unseen; the host-agent restarted meanwhile.
+  clock.now += 60_000;
+  const restarted = new FakeAgent(h.agentKeys, "m1");
+  const before = h.first.sent.length;
+  const delivery = h.client.sendControl("m1", steer);
+  // Held: only a ping and a hello go into the doubtful socket.
+  expect(kinds(h.first.sent.slice(before))).toEqual(["ping", "h"]);
+  // No pong comes in time: the socket is dropped and a new one dialled.
+  h.sched.fireTimers();
+  const second = h.sockets[1];
+  if (!second) throw new Error("no redial");
+  second.fireOpen();
+  restarted.connect(second);
+  restarted.relay();
+  // The restarted agent's ack sends the steer, sealed to its epoch, ahead of
+  // the sync it pulls.
+  expect(restarted.frames).toEqual([steer, SYNC]);
+  expect(await delivery).toBe(true);
+  // Later acks, on a later socket too, do not send it again.
+  h.client.wake();
+  const third = h.sockets[2];
+  if (!third) throw new Error("no redial");
+  third.fireOpen();
+  restarted.connect(third);
+  restarted.relay();
+  expect(restarted.frames).toEqual([steer, SYNC, SYNC]);
+});
+
+test("frames held on a silent socket the relay still answers go on the agent's ack, in order, with no redial", async () => {
+  const clock = { now: 0 };
+  const h = await acked(clock);
+  clock.now += 60_000;
+  const stopped = h.client.sendControl("m1", stop);
+  // The relay pongs the probe, so the socket is alive; a frame sent now still
+  // waits behind the one held.
+  h.first.deliver(JSON.stringify({ type: "pong" }));
+  const queued = h.client.sendControl("m1", followUp);
+  // The hello the hold said draws the agent's ack on this socket: the same
+  // epoch, so no second sync.
+  h.agent.relay();
+  expect(h.agent.frames).toEqual([SYNC, stop, followUp]);
+  expect(await stopped).toBe(true);
+  expect(await queued).toBe(true);
+  h.sched.fireTimers();
+  expect(h.sockets).toHaveLength(1);
+});
+
+test("a prompt held past its time is dropped unsent, and its echo shows as not delivered", async () => {
+  const clock = { now: 0 };
+  const h = await acked(clock);
+  // The link drops, and the redial never opens.
+  h.first.fireClose();
+  const delivery = h.client.sendControl("m1", steer);
+  h.store.addPendingPrompt("s1", "check the tests first", "steer", "c1");
+  // Held, the link redials at once rather than waiting out the backoff.
+  expect(h.sockets).toHaveLength(2);
+  clock.now += CONTROL_HOLD_MS;
+  h.sched.fireTimers();
+  expect(await delivery).toBe(false);
+  const entries = h.store.transcriptFor("s1")?.entries ?? [];
+  const echo = entries.flatMap((e) =>
+    e.kind === "message" && e.clientId === "c1"
+      ? [{ pending: e.pending, failed: e.failed }]
+      : [],
+  );
+  expect(echo).toEqual([{ pending: undefined, failed: true }]);
+  // The link comes back: the dropped prompt is never sent late.
+  const second = h.sockets[1];
+  if (!second) throw new Error("no redial");
+  second.fireOpen();
+  h.agent.connect(second);
+  h.agent.relay();
+  expect(h.agent.frames).toEqual([SYNC, SYNC]);
+});
+
+test("an interrupt held past its time is not sent late when the link returns; a prompt held as long still is", async () => {
+  const clock = { now: 0 };
+  const h = await acked(clock);
+  clock.now += 60_000;
+  const stopped = h.client.sendControl("m1", stop);
+  const queued = h.client.sendControl("m1", followUp);
+  // The tab froze again before any timer ran, and is back past the
+  // interrupt's time: sent now, it could stop a turn begun since.
+  clock.now += INTERRUPT_HOLD_MS;
+  h.client.wake();
+  const second = h.sockets[1];
+  if (!second) throw new Error("no redial");
+  second.fireOpen();
+  h.agent.connect(second);
+  h.agent.relay();
+  expect(h.agent.frames).toEqual([SYNC, followUp, SYNC]);
+  expect(await stopped).toBe(false);
+  expect(await queued).toBe(true);
+});
+
+test("a frame held while its machine's agent is away goes once the relay lists the machine again", async () => {
+  const clock = { now: 0 };
+  const h = await acked(clock);
+  // The relay restarts. The phone is back first, so the relay drops its hello
+  // to the machine, and a steer waits for an ack.
+  h.first.fireClose();
+  h.sched.fireTimers();
+  const second = h.sockets[1];
+  if (!second) throw new Error("no redial");
+  second.fireOpen();
+  const delivery = h.client.sendControl("m1", steer);
+  h.agent.connect(second);
+  h.agent.dropSent();
+  // The agent registers again, and the relay lists the machine.
+  second.deliver(JSON.stringify({ type: "machines", machineIds: ["m1"] }));
+  h.agent.relay();
+  expect(h.agent.frames).toEqual([SYNC, steer, SYNC]);
+  expect(await delivery).toBe(true);
 });

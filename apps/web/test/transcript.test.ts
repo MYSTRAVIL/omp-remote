@@ -698,3 +698,36 @@ test("a refused prompt, and one still waiting when the session ends, show as not
   reduceTranscript(s, userEcho("u1", "first", "c1"));
   expect(order(s)).toEqual(["pending-1!", "control-error:prompt", "u1"]);
 });
+
+test("the host's copy of a photo sent with a prompt loads into the prompt's own bubble once omp takes it in", () => {
+  const s = emptyTranscript();
+  // Sent from a phone that kept no copy of its own (or from another device).
+  echo(s, "what is this?", "c1");
+  reduceTranscript(s, userEcho("user-9", "what is this?", "c1"));
+  const raw = new Uint8Array([0xff, 0xd8, 0xff, 1]);
+  reduceTranscript(s, {
+    t: "mediaInit",
+    sessionId: "s1",
+    mediaId: "user-9:0",
+    anchor: { kind: "message", msgId: "user-9" },
+    mimeType: "image/jpeg",
+    size: raw.length,
+    totalChunks: 1,
+  });
+  reduceTranscript(s, {
+    t: "mediaChunk",
+    sessionId: "s1",
+    mediaId: "user-9:0",
+    index: 0,
+    data: toBase64(raw),
+  });
+  expect(order(s)).toEqual(["user-9"]);
+  const bubble = s.entries[0];
+  expect(bubble?.kind === "message" ? bubble.media : undefined).toEqual([
+    expect.objectContaining({
+      mediaId: "user-9:0",
+      status: "ready",
+      dataUrl: `data:image/jpeg;base64,${toBase64(raw)}`,
+    }),
+  ]);
+});

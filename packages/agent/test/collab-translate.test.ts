@@ -386,11 +386,12 @@ test("a live tool call carries its intent as a title through to the end frame", 
       },
     }),
   );
+  // The body keeps the command and shows the output's lines under it.
   expect(end[0]).toMatchObject({
     name: "bash",
     title: "List files",
     status: "done",
-    preview: "a b",
+    preview: "ls -la\n\na\nb",
   });
 });
 
@@ -459,7 +460,7 @@ test("a historical snapshot reconstructs a tool card with name and title", () =>
     name: "read",
     title: "Read a",
     status: "done",
-    preview: "contents",
+    preview: "a.ts\n\ncontents",
   });
 });
 
@@ -550,7 +551,7 @@ test("a historical xd:// device call reconstructs under the device name", () => 
     callId: "x2",
     name: "lsp",
     status: "done",
-    preview: "3 refs",
+    preview: "findRefs\n\n3 refs",
   });
 });
 
@@ -671,4 +672,100 @@ test("a read image is sent from the original file with its true filetype", () =>
     .map((f) => (f.t === "mediaChunk" ? f.data : ""))
     .join("");
   expect(Buffer.from(joined, "base64")).toEqual(png);
+});
+
+/** A user message entry carrying a photo, as the host appends it. */
+const photoEntry = (data: string) => ({
+  type: "message",
+  id: "u7",
+  timestamp: "2026-09-27T10:00:00.000Z",
+  message: {
+    role: "user",
+    content: [
+      { type: "text", text: "what is this?" },
+      { type: "image", data, mimeType: "image/jpeg" },
+    ],
+    timestamp: 1_790_000_000_000,
+  },
+});
+const photoPrompt = (data: string) =>
+  CollabHostFrameSchema.parse({ t: "entry", entry: photoEntry(data) });
+
+test("a photo sent with a prompt goes to the phone anchored to the prompt's row, after it", () => {
+  const translator = new CollabTranslator("sess-1");
+  const photo = Buffer.from([0xff, 0xd8, 0xff, 1, 2, 3]).toString("base64");
+  const out = translator.host(photoPrompt(photo));
+  expect(out.map((f) => f.t)).toEqual(["msg", "mediaInit", "mediaChunk"]);
+  expect(out[0]).toMatchObject({ msgId: "u7", role: "user" });
+  expect(out[1]).toMatchObject({
+    sessionId: "sess-1",
+    mediaId: "u7:0",
+    anchor: { kind: "message", msgId: "u7" },
+    mimeType: "image/jpeg",
+    size: 6,
+  });
+  expect(out[2]).toMatchObject({ mediaId: "u7:0", index: 0, data: photo });
+
+  // A snapshot comes again with every reconnect: it never re-sends a photo.
+  const again = translator.host({
+    t: "snapshot-chunk",
+    final: true,
+    entries: [photoEntry(photo)],
+  });
+  expect(again.map((f) => f.t)).toEqual(["msg"]);
+});
+
+test("an image Collab clipped on its way is shown as unavailable, never sent as broken chunks", () => {
+  // Past its replication cap Collab cuts a long string and marks the cut.
+  const clipped = `${"A".repeat(65_000)}\n…[1400000 chars elided for collab session]`;
+  const prompt = new CollabTranslator("s").host(photoPrompt(clipped));
+  expect(prompt.map((f) => f.t)).toEqual(["msg", "mediaInit", "mediaError"]);
+  expect(prompt[2]).toMatchObject({ mediaId: "u7:0", code: "internal" });
+
+  const screenshot = new CollabTranslator("s").host(
+    CollabHostFrameSchema.parse({
+      t: "event",
+      event: {
+        type: "tool_execution_end",
+        toolCallId: "c5",
+        toolName: "browser",
+        result: {
+          content: [{ type: "image", data: clipped, mimeType: "image/png" }],
+        },
+      },
+    }),
+  );
+  expect(screenshot.map((f) => f.t)).toEqual([
+    "tool",
+    "mediaInit",
+    "mediaError",
+  ]);
+});
+
+test("a snapshot's answer to a question adds no card", () => {
+  const frames = new CollabTranslator("s").host({
+    t: "snapshot-chunk",
+    final: true,
+    entries: [
+      {
+        type: "message",
+        id: "m9",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "q1", name: "ask", arguments: {} }],
+        },
+      },
+      {
+        type: "message",
+        id: "r9",
+        message: {
+          role: "toolResult",
+          toolCallId: "q1",
+          toolName: "ask",
+          content: [{ type: "text", text: "Yes" }],
+        },
+      },
+    ],
+  });
+  expect(tools(frames)).toEqual([]);
 });

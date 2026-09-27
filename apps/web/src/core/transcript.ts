@@ -72,10 +72,26 @@ export interface MediaEntry {
    * holds it.
    */
   status: "deferred" | "loading" | "ready" | "error" | "expired";
+  /** The image's bytes as a self-contained URL: a `data:` URL assembled from
+   *  its chunks, or an object URL of this phone's own copy of a photo it
+   *  sent. */
   dataUrl?: string;
   /** Set once this phone asked the host for a deferred image's bytes; see
    *  {@link claimMediaFetch}. */
   requested?: boolean;
+  /** A photo this phone sent, shown from its own copy since the send. The
+   *  host's announcement of that image takes this entry over (its id, never
+   *  a second copy to load); see {@link reduceTranscript}. */
+  local?: true;
+}
+
+/** A photo this phone sent with a prompt, as the prompt's echo shows it. */
+export interface SentImage {
+  /** An object URL of the phone's own copy, the file it uploaded. */
+  url: string;
+  name: string;
+  mimeType: string;
+  size: number;
 }
 
 export interface ToolEntry {
@@ -431,7 +447,16 @@ export function reduceTranscript(
       const at = media.findIndex((m) => m.mediaId === frame.mediaId);
       const known = media[at];
       if (known === undefined) {
-        media.push(mediaFrom(frame));
+        // The host's copy of a photo this phone sent (its images come in the
+        // order they were attached): the phone's own copy, shown since the
+        // send, takes the host's id, so the bubble keeps one image and no
+        // second copy is loaded. Its chunks, and an error, then find it ready.
+        const own = media.find((m) => m.local);
+        if (own === undefined) media.push(mediaFrom(frame));
+        else {
+          own.mediaId = frame.mediaId;
+          own.local = undefined;
+        }
         break;
       }
       // Announced again, an image starts over only when this phone lacks its

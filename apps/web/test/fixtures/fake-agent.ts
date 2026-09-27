@@ -66,6 +66,14 @@ export class FakeAgent {
   }
 
   /**
+   * The relay dropped every line the phone socket has sent so far, as it does
+   * on a route no agent has registered: the agent never sees them.
+   */
+  dropSent(): void {
+    this.#read = this.#link?.sent.length ?? 0;
+  }
+
+  /**
    * Play the relay until both ends are quiet: the phone's sealed lines on this
    * route go to the agent in order, and what the agent seals in reply (an ack)
    * goes back to the phone, whose own answer (a sync) is relayed in turn.

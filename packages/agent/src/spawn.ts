@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import {
   type ApprovalMode,
+  REMOTE_APPROVAL_FLAG,
   type SpawnThinkingLevel,
   StoredSessionId,
 } from "@omp-remote/protocol";
@@ -15,7 +16,8 @@ export interface SpawnOptions {
   resume?: string;
   /** omp `--thinking` for the spawned session (thinking effort). */
   thinkingLevel?: SpawnThinkingLevel;
-  /** omp `--approval-mode` for the spawned session (spec §8 v1). */
+  /** The approval mode the phone chose (spec §8 v1); {@link approvalArgs}
+   *  says how the session asks for it. */
   approvalMode?: ApprovalMode;
   /**
    * Phone-generated correlation nonce. Exported to the spawned omp as
@@ -32,6 +34,9 @@ export interface SpawnOptions {
    * PATH, falling back to conhost when it is not installed. Tests pass it.
    */
   windowsTerminal?: string | null;
+  /** The environment omp inherits, the host-agent's own by default; its
+   *  `OMP_REMOTE_MODE` decides {@link approvalArgs}. Tests pass one. */
+  env?: NodeJS.ProcessEnv;
   /** Override platform detection (tests only). */
   platform?: NodeJS.Platform;
   /** Override the process launcher (tests only). */
@@ -83,15 +88,37 @@ const CONHOST = win32.join(
 );
 
 /**
- * The omp CLI flags for a spawn (pure — the testable core of the argv). Throws
- * when the model is not a {@link MODEL_ID} or the resume id is not a
- * `StoredSessionId`, before any command line exists. A resume drops the model.
+ * The omp flags that make a spawned session ask for approval where the phone
+ * can answer. omp's own `--approval-mode` prompt shows only in the terminal,
+ * except under Collab (`OMP_REMOTE_MODE=collab` in `env`, the environment omp
+ * inherits): omp mirrors its dialogs to the room's guests, the host-agent among
+ * them, so the prompt reaches the phone as a question and the first answer
+ * wins. Any other session runs with omp's approval off and the bridge's gate
+ * on (`--omp-remote-approval=<mode>`), which asks at the terminal and on the
+ * phone at once. omp refuses that flag when the bridge is not loaded, so such
+ * a session never runs unapproved.
+ */
+export function approvalArgs(
+  mode: ApprovalMode,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  if (mode === "yolo" || env.OMP_REMOTE_MODE === "collab")
+    return ["--approval-mode", mode];
+  return ["--approval-mode", "yolo", `--${REMOTE_APPROVAL_FLAG}=${mode}`];
+}
+
+/**
+ * The omp CLI flags for a spawn (pure — the testable core of the argv). `env`
+ * is the environment omp inherits ({@link approvalArgs}). Throws when the
+ * model is not a {@link MODEL_ID} or the resume id is not a `StoredSessionId`,
+ * before any command line exists. A resume drops the model.
  */
 export function spawnArgs(
   opts: Pick<
     SpawnOptions,
     "model" | "approvalMode" | "thinkingLevel" | "resume"
   >,
+  env: NodeJS.ProcessEnv,
 ): string[] {
   const args: string[] = [];
   if (opts.resume !== undefined) {
@@ -108,7 +135,7 @@ export function spawnArgs(
     args.push("--model", opts.model);
   }
   if (opts.thinkingLevel) args.push("--thinking", opts.thinkingLevel);
-  if (opts.approvalMode) args.push("--approval-mode", opts.approvalMode);
+  if (opts.approvalMode) args.push(...approvalArgs(opts.approvalMode, env));
   return args;
 }
 
@@ -267,7 +294,8 @@ export async function spawnSession(opts: SpawnOptions): Promise<SpawnHandle> {
     throw new Error(
       `spawn: cwd ${JSON.stringify(opts.cwd)} is not an existing directory`,
     );
-  const ompArgs = spawnArgs(opts);
+  const inherited = opts.env ?? process.env;
+  const ompArgs = spawnArgs(opts, inherited);
   const requested = opts.ompBin ?? "omp";
   // With no shell in the win32 launch, omp is found here on the host-agent's
   // PATH (Bun.which never searches the cwd), and a missing omp fails now rather
@@ -278,8 +306,8 @@ export async function spawnSession(opts: SpawnOptions): Promise<SpawnHandle> {
       `spawn: ${JSON.stringify(requested)} is not on the host-agent's PATH`,
     );
   const env = opts.spawnId
-    ? { ...process.env, OMP_REMOTE_SPAWN_ID: opts.spawnId }
-    : process.env;
+    ? { ...inherited, OMP_REMOTE_SPAWN_ID: opts.spawnId }
+    : inherited;
   // Windows Terminal is found on the host-agent's PATH like omp (never in the
   // cwd); without it the session opens in a plain conhost console.
   const windowsTerminal =

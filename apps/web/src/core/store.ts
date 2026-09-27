@@ -19,6 +19,7 @@ import {
   assembleTree,
 } from "./session-tree";
 import {
+  type SentImage,
   type TranscriptState,
   claimMediaFetch,
   emptyTranscript,
@@ -777,24 +778,43 @@ export class AppStore {
    * mid-turn `steer` in particular is only echoed by the agent once consumed;
    * this bridges that gap. The echo waits last until the host's user message
    * confirms it (by `clientId`, or by text from an older host), so it never
-   * duplicates; see `reduceTranscript`.
+   * duplicates; see `reduceTranscript`. The photos sent with it show in it
+   * from this phone's own copies, which the host's copies take over.
    */
   addPendingPrompt(
     sessionId: string,
     text: string,
     mode: "steer" | "followUp",
     clientId?: string,
+    images: readonly SentImage[] = [],
   ): void {
     const transcript = this.#transcripts.get(sessionId) ?? emptyTranscript();
     this.#promptSeq += 1;
+    const msgId = `pending-${this.#promptSeq}`;
     transcript.entries.push({
       kind: "message",
-      msgId: `pending-${this.#promptSeq}`,
+      msgId,
       role: "user",
       text,
       streaming: false,
       pending: mode,
       ...(clientId === undefined ? {} : { clientId }),
+      ...(images.length === 0
+        ? {}
+        : {
+            media: images.map((image, i) => ({
+              mediaId: `${msgId}:${i}`,
+              name: image.name,
+              mimeType: image.mimeType,
+              size: image.size,
+              totalChunks: 0,
+              chunks: [],
+              received: 0,
+              status: "ready" as const,
+              dataUrl: image.url,
+              local: true as const,
+            })),
+          }),
     });
     if (clientId !== undefined)
       this.#sent.set(clientId, {
@@ -804,6 +824,20 @@ export class AppStore {
       });
     this.#transcripts.set(sessionId, transcript);
     this.#emit();
+  }
+
+  /**
+   * The prompt sent as `clientId` never left this phone: `PhoneClient`
+   * held it for a live link and dropped it (the link did not come back in
+   * time, or the client stopped). Its echo stops waiting and shows as not
+   * delivered.
+   */
+  failPrompt(clientId: string): void {
+    const sent = this.#sent.get(clientId);
+    if (sent === undefined) return;
+    this.#sent.delete(clientId);
+    const transcript = this.#transcripts.get(sent.sessionId);
+    if (transcript && failLocalEcho(transcript, clientId)) this.#emit();
   }
 
   /**

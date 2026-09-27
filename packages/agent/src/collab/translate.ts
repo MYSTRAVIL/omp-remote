@@ -22,15 +22,19 @@ import { resolve } from "node:path";
 import type { GuestFrame } from "@oh-my-pi/pi-wire";
 import type {
   DownlinkFrame,
+  ImageBlock,
   InteractionQuestion,
+  MediaInitFrame,
+  ToolCard,
   UplinkFrame,
 } from "@omp-remote/protocol";
 import {
   FeedMsgIds,
   MAX_RESOURCE_BYTES,
-  base64ByteLength,
-  chunkBase64,
-  parseXdevWrite,
+  describeToolCall,
+  imageBlocks,
+  mediaTransfer,
+  toolPreview,
 } from "@omp-remote/protocol";
 import type {
   CollabAgentEvent,
@@ -40,8 +44,6 @@ import type {
   CollabUiRequest,
   CollabWireMessage,
 } from "./schema";
-
-const PREVIEW_MAX = 200;
 
 /** Collab ui-request reqId (number) <-> omp-remote interaction id (string). */
 function interactionId(reqId: number): string {
@@ -75,63 +77,6 @@ function epochMs(value: unknown): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
-function preview(value: unknown): string {
-  if (value === undefined || value === null) return "";
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return text.length > PREVIEW_MAX
-    ? `${text.slice(0, PREVIEW_MAX)}\u2026`
-    : text;
-}
-
-/** Collapse whitespace and truncate to a single readable summary line. */
-function oneLine(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > PREVIEW_MAX
-    ? `${flat.slice(0, PREVIEW_MAX)}\u2026`
-    : flat;
-}
-
-/** Salient argument keys, in priority order, for a one-line tool summary. */
-const ARG_KEYS = [
-  "command",
-  "cmd",
-  "path",
-  "file",
-  "pattern",
-  "query",
-  "url",
-  "code",
-  "input",
-  "text",
-  "prompt",
-];
-
-/** A concise human one-liner describing a tool call from its arguments. */
-function argSummary(args: unknown): string {
-  if (!args || typeof args !== "object" || Array.isArray(args))
-    return preview(args);
-  // Tool arguments are arbitrary per-tool JSON (Zod `unknown`); read salient
-  // string fields by key, guarding each access with a typeof check.
-  const record = args as Record<string, unknown>;
-  for (const key of ARG_KEYS) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return oneLine(value);
-  }
-  return preview(args);
-}
-
-/** Full value of the first path-like arg (`path`/`file`), or "" when none. Any
- *  read selector suffix (`:img`, `:50-100`) is left on for the reader to strip. */
-function filePathFromArgs(args: unknown): string {
-  if (!args || typeof args !== "object" || Array.isArray(args)) return "";
-  const record = args as Record<string, unknown>;
-  for (const key of ["path", "file"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return "";
-}
-
 /** True image type from magic bytes (not the extension), or undefined. */
 function mimeFromBytes(bytes: Buffer): string | undefined {
   if (
@@ -160,33 +105,6 @@ function mimeFromBytes(bytes: Buffer): string | undefined {
   return undefined;
 }
 
-/** One text block of a tool result, or "" if it is not a `{type:"text"}` block. */
-function blockText(block: unknown): string {
-  if (
-    block &&
-    typeof block === "object" &&
-    "type" in block &&
-    block.type === "text" &&
-    "text" in block &&
-    typeof block.text === "string"
-  )
-    return block.text;
-  return "";
-}
-
-/** Readable text from a tool result (`{content:[{type,text}]}`), else a JSON preview. */
-function resultText(value: unknown): string {
-  if (typeof value === "string") return oneLine(value);
-  if (value && typeof value === "object" && "content" in value) {
-    const content = value.content;
-    if (Array.isArray(content)) {
-      const text = content.map(blockText).join("");
-      if (text.trim()) return oneLine(text);
-    }
-  }
-  return preview(value);
-}
-
 function optionsFrom(request: CollabUiRequest): InteractionQuestion["options"] {
   if (!request.options || request.options.length === 0) return undefined;
   return request.options.map((option) =>
@@ -209,11 +127,10 @@ export class CollabTranslator {
   #contextPct?: number;
   #contextTokens?: number;
   #contextWindow?: number;
-  readonly #toolTitles = new Map<string, string>();
-  readonly #toolFiles = new Map<string, string>();
-  /** callId → xd:// device name, so a device call's card is labelled by the
-   *  device (not the outer `write`) across its start and end frames. */
-  readonly #toolDevices = new Map<string, string>();
+  /** callId → the card its start described, so the end (its event carries
+   *  no args) keeps its label, title and argument, and a device call stays
+   *  labelled by the device, not the outer `write`. */
+  readonly #toolCards = new Map<string, ToolCard>();
   #cwd = "";
 
   constructor(sessionId: string) {
@@ -345,21 +262,20 @@ export class CollabTranslator {
       if (role === "toolResult") {
         // Live tool output arrives via tool_execution events; only the historical
         // snapshot reconstructs a finished tool. The result message carries the
-        // call id + tool name, so the card merges with its start (below).
-        if (live) return [];
+        // call id + tool name, so the card merges with its start (below). An
+        // `ask` answers a question, which never showed as a card.
+        if (live || message.toolName === "ask") return [];
         const callId = message.toolCallId ?? entry.id ?? `t${++this.#seq}`;
-        const title = this.#toolTitles.get(callId) ?? "";
-        this.#toolTitles.delete(callId);
-        const device = this.#toolDevices.get(callId);
-        this.#toolDevices.delete(callId);
+        const card = this.#toolCards.get(callId);
+        this.#toolCards.delete(callId);
         return [
           this.#tool(
             callId,
-            device ?? message.toolName ?? "",
+            card?.name ?? message.toolName ?? "",
             "end",
             message.isError ? "error" : "done",
-            extractText(message.content),
-            title,
+            toolPreview(card, message.content),
+            card?.title,
           ),
         ];
       }
@@ -368,14 +284,21 @@ export class CollabTranslator {
         for (const block of message.content) {
           if (block.type !== "toolCall" || !block.id) continue;
           if (block.name === "ask") continue; // surfaces via interaction instead
-          const xdev = parseXdevWrite(block.name, block.arguments);
-          const name = xdev ? xdev.device : (block.name ?? "");
-          if (xdev) this.#toolDevices.set(block.id, xdev.device);
-          const detail = argSummary(xdev ? xdev.content : block.arguments);
-          const title = oneLine(block.intent ?? "") || detail;
-          this.#toolTitles.set(block.id, title);
+          const card = describeToolCall(
+            block.name ?? "",
+            block.arguments,
+            block.intent,
+          );
+          this.#toolCards.set(block.id, card);
           out.push(
-            this.#tool(block.id, name, "start", "running", detail, title),
+            this.#tool(
+              block.id,
+              card.name,
+              "start",
+              "running",
+              card.argument,
+              card.title,
+            ),
           );
         }
       }
@@ -400,6 +323,17 @@ export class CollabTranslator {
             timestamp ?? epochMs(entry.timestamp),
           ),
         );
+      // The photos sent with a prompt show in its bubble, after the row they
+      // anchor to. Only live: a snapshot comes again with every reconnect.
+      if (live && role === "user")
+        for (const [i, image] of imageBlocks(message.content).entries())
+          out.push(
+            ...this.#mediaFor(
+              `${msgId}:${i}`,
+              { kind: "message", msgId },
+              image,
+            ),
+          );
       return out;
     }
     if (entry.type === "custom_message" && entry.display !== false) {
@@ -493,126 +427,94 @@ export class CollabTranslator {
     if (!event.toolCallId) return [];
     if (event.toolName === "ask") return []; // surfaces via interactionFrame instead
     const callId = event.toolCallId;
-    let title = this.#toolTitles.get(callId);
-    let device = this.#toolDevices.get(callId);
-    let startPreview = "";
     if (phase === "start") {
-      // An `xd://` device call surfaces only as the outer `write`; label the
-      // card by the device and summarize its decoded args, not `{path,content}`.
-      const xdev = parseXdevWrite(event.toolName, event.args);
-      if (xdev) {
-        device = xdev.device;
-        this.#toolDevices.set(callId, device);
-      }
-      startPreview = argSummary(xdev ? xdev.content : event.args);
-      title = oneLine(event.intent ?? "") || startPreview;
-      if (title) this.#toolTitles.set(callId, title);
-      if (!xdev) {
-        const file = filePathFromArgs(event.args);
-        if (file) this.#toolFiles.set(callId, file);
-      }
+      const card = describeToolCall(
+        event.toolName ?? "",
+        event.args,
+        event.intent,
+      );
+      this.#toolCards.set(callId, card);
+      return [
+        this.#tool(callId, card.name, phase, status, card.argument, card.title),
+      ];
     }
-    const previewText =
-      phase === "end"
-        ? resultText(event.result)
-        : phase === "update"
-          ? resultText(event.partialResult)
-          : startPreview;
-    const frame = this.#tool(
-      callId,
-      device ?? event.toolName ?? "",
-      phase,
-      status,
-      previewText,
-      title ?? "",
-    );
-    if (phase === "end") {
-      this.#toolTitles.delete(callId);
-      this.#toolDevices.delete(callId);
-      const sourcePath = this.#toolFiles.get(callId);
-      this.#toolFiles.delete(callId);
-      const result = event.result as { content?: unknown } | undefined;
-      return [frame, ...this.#mediaFrames(callId, result?.content, sourcePath)];
-    }
-    return [frame];
+    const card = this.#toolCards.get(callId);
+    const name = card?.name ?? event.toolName ?? "";
+    if (phase === "update")
+      return [
+        this.#tool(
+          callId,
+          name,
+          phase,
+          status,
+          toolPreview(card, event.partialResult),
+          card?.title,
+        ),
+      ];
+    this.#toolCards.delete(callId);
+    const result = event.result;
+    return [
+      this.#tool(
+        callId,
+        name,
+        phase,
+        status,
+        toolPreview(card, result),
+        card?.title,
+      ),
+      ...this.#mediaFrames(
+        callId,
+        typeof result === "object" && result !== null && "content" in result
+          ? result.content
+          : undefined,
+        card?.file,
+      ),
+    ];
   }
 
-  /** Media (image) frames for any inline `{type:"image",data,mimeType}` blocks in a
-   *  tool result's content, anchored to the tool call so the phone renders them under
-   *  the tool card. Integrity rides the sealed channel, so no per-transfer hash. */
+  /** The images a tool result returned, anchored to its call so the phone
+   *  shows them under the card. Integrity rides the sealed channel, so no
+   *  per-transfer hash. */
   #mediaFrames(
     callId: string,
     content: unknown,
     sourcePath?: string,
   ): UplinkFrame[] {
+    const images = imageBlocks(content);
+    if (images.length === 0) return [];
+    const anchor = { kind: "tool", callId } as const;
     // Prefer the ORIGINAL file on disk (true name + filetype) over omp's inline
     // content, which may be transcoded (a png read can arrive as webp).
     const original = sourcePath ? this.#readImageFile(sourcePath) : undefined;
     if (original)
-      return this.#mediaFor(
-        `${callId}:0`,
-        callId,
-        original.name,
-        original.mimeType,
-        original.data,
-      );
-    if (!Array.isArray(content)) return [];
+      return this.#mediaFor(`${callId}:0`, anchor, original, original.name);
     const base = sourcePath
       ? ((sourcePath.split(/[\\/]/).pop() ?? "").split(":")[0] ?? "")
       : "";
-    const out: UplinkFrame[] = [];
-    let ordinal = 0;
-    for (const block of content) {
-      if (!block || typeof block !== "object") continue;
-      const b = block as { type?: unknown; data?: unknown; mimeType?: unknown };
-      if (b.type !== "image" || typeof b.data !== "string") continue;
-      const mime = typeof b.mimeType === "string" ? b.mimeType : "image/png";
-      out.push(
-        ...this.#mediaFor(
-          `${callId}:${ordinal++}`,
-          callId,
-          base || undefined,
-          mime,
-          b.data,
-        ),
-      );
-    }
-    return out;
+    return images.flatMap((image, i) =>
+      this.#mediaFor(`${callId}:${i}`, anchor, image, base || undefined),
+    );
   }
 
-  /** Build a `mediaInit` + ordered `mediaChunk`s for one image, or [] when it is
-   *  empty or over the size budget. */
+  /** One image's frames (see `mediaTransfer`) stamped with this session: its
+   *  `mediaInit` and chunks, or its `mediaInit` and the error to show in its
+   *  place (over budget, or clipped by Collab's replication cap). */
   #mediaFor(
     mediaId: string,
-    callId: string,
-    name: string | undefined,
-    mimeType: string,
-    data: string,
+    anchor: MediaInitFrame["anchor"],
+    image: ImageBlock,
+    name?: string,
   ): UplinkFrame[] {
-    const size = base64ByteLength(data);
-    if (size === 0 || size > MAX_RESOURCE_BYTES) return [];
-    const slices = chunkBase64(data);
-    const out: UplinkFrame[] = [
-      {
-        t: "mediaInit",
-        sessionId: this.#sessionId,
-        mediaId,
-        anchor: { kind: "tool", callId },
-        name,
-        mimeType,
-        size,
-        totalChunks: slices.length,
-      },
-    ];
-    for (const [i, chunk] of slices.entries())
-      out.push({
-        t: "mediaChunk",
-        sessionId: this.#sessionId,
-        mediaId,
-        index: i,
-        data: chunk,
-      });
-    return out;
+    const transfer = mediaTransfer(mediaId, anchor, image, name);
+    if (!transfer) return [];
+    const sessionId = this.#sessionId;
+    const init: UplinkFrame = { ...transfer.init, sessionId };
+    if (!transfer.ok)
+      return [
+        init,
+        { t: "mediaError", sessionId, mediaId, code: transfer.code },
+      ];
+    return [init, ...transfer.chunks.map((chunk) => ({ ...chunk, sessionId }))];
   }
 
   /** Read the original image the `read` tool referenced, so the phone gets the
