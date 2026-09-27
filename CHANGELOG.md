@@ -5,6 +5,8 @@ All notable changes to omp-remote are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-27
+
 ### Changed
 
 - A session's notification now simply disappears once the session is answered at the desk, as a native app's would. Chrome shows its own "This site has been updated in the background" notification after too many pushes that leave nothing showing, so after five such removals in 24 hours the phone falls back to leaving one that says the session no longer waits. Removals while another notification is showing or the app is open don't count toward the five.
@@ -240,7 +242,8 @@ All notable changes to omp-remote are documented here. The format follows
   each side refuses counters it has already seen. The phone PWA and the
   host-agent must be updated together: neither accepts the old envelope.
 
-[Unreleased]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/MYSTRAVIL/omp-remote/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MYSTRAVIL/omp-remote/releases/tag/v0.1.0
